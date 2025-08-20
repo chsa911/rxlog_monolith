@@ -1,27 +1,21 @@
 // backend/routes/books.js
-const express = require('express');
-const {
-  listBooks,
-  autocomplete,
-  setTop,
-  setStatus,
-} = require('../controllers/booksController');
-
+const express = require("express");
 const router = express.Router();
+const booksController = require("../controllers/booksController");
 
-// GET /api/books?q=...&page=1&limit=20&sortBy=...&status=...
-router.get('/', listBooks);
+// Register a new book (assigns next free BMark)
+router.post("/register", booksController.registerBook);
 
-// GET /api/books/autocomplete/:field?q=...
-router.get('/autocomplete/:field', autocomplete);
+// List all books with optional filtering, search, pagination
+router.get("/", booksController.listBooks);
 
-// Register new book
-router.post("/", booksController.registerBook);
+// Update book status (e.g. historisiert, v, toptitel, etc.)
+router.patch("/:id", booksController.updateBook);
 
-// PATCH /api/books/:id/top   { top: true|false }
-router.patch('/:id/top', setTop);
+// Get single book by id
+router.get("/:id", booksController.getBook);
 
-// PATCH /api/books/:id/status   { status: 'historisiert'|'vorzeitig'|'open' }
-router.patch('/:id/status', setStatus);
+// Delete a book (optional, only if you want)
+router.delete("/:id", booksController.deleteBook);
 
 module.exports = router;

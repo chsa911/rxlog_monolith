@@ -53,4 +53,11 @@ async function sizeToPrefixFromDb(BBreite, BHoehe) {
 
 // Handle "i" → "ik" fallback rule
 function normalizeI(prefix) {
-  if (!prefix) return
+  if (!prefix) return prefix;
+  if (prefix.endsWith("i")) {
+    return prefix + "k";
+  }
+  return prefix;
+}
+
+module.exports = sizeToPrefixFromDb;

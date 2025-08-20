@@ -9,7 +9,8 @@
     "seed:rules": "node scripts/seedSizeRules.js",
     "create:indexes": "node scripts/createIndexes.js",
     "cleanup:bmarkf": "node scripts/cleanupBMarks.js",
-    "report:missing": "node scripts/reportMissingBMarks.js"
+    "report:missing": "node scripts/reportMissingBMarks.js",
+    "normalize:bmarkf": "node scripts/normalizeBMarkf.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
