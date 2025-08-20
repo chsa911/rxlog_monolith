@@ -15,6 +15,9 @@ router.get('/', listBooks);
 // GET /api/books/autocomplete/:field?q=...
 router.get('/autocomplete/:field', autocomplete);
 
+// Register new book
+router.post("/", booksController.registerBook);
+
 // PATCH /api/books/:id/top   { top: true|false }
 router.patch('/:id/top', setTop);
 

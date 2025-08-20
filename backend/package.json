@@ -6,8 +6,10 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "seed:rules": "node scripts/seedSizeRules.js",
     "create:indexes": "node scripts/createIndexes.js",
-    "cleanup:bmarkf": "node scripts/cleanupBMarkf.js"
+    "cleanup:bmarkf": "node scripts/cleanupBMarks.js",
+    "report:missing": "node scripts/reportMissingBMarks.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -18,4 +20,5 @@
   "devDependencies": {
     "nodemon": "^3.1.0"
   }
+
 }
