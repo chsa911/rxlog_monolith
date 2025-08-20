@@ -9,9 +9,7 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bmarkdb';
 mongoose.connect(MONGO_URI)
   .then(() => {
     console.log('✅ MongoDB connected');
-    app.listen(PORT, () => {
-      console.log(`🚀 API listening on http://localhost:${PORT}`);
-    });
+    app.listen(PORT, () => console.log(`🚀 API listening on http://localhost:${PORT}`));
   })
   .catch(err => {
     console.error('❌ Mongo connection error:', err);

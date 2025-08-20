@@ -3,6 +3,12 @@
     const BMarkf = require('../models/BMarkf');
     const { computeRank } = require('../utils/status');
 
+    // Helper to derive prefix from size (your rules go here)
+    function derivePrefix(BBreite, BHoehe) {
+      if (BBreite < 12 && BHoehe < 20) return 'egk';
+      if (BBreite < 20) return 'lgk';
+      return 'ogk';
+    }
     /**
      * Preview best available mark for a given prefix
      */
@@ -15,6 +21,23 @@
       if (!candidate) return res.json(null);
       res.json(candidate);
     };
+exports.previewBySize = async (req, res) => {
+  try {
+    const { BBreite, BHoehe } = req.query;
+    if (!BBreite || !BHoehe) {
+      return res.status(400).json({ error: 'BBreite and BHoehe required' });
+    }
+
+    const prefix = derivePrefix(Number(BBreite), Number(BHoehe));
+
+    const candidate = await BMarkf.findOne({ BMark: new RegExp(`^${prefix}`, 'i') })
+      .sort({ rank: 1, BMark: 1 });
+
+    res.json(candidate || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
     /**
      * Register book: allocate mark
@@ -24,6 +47,18 @@
 
       // derive prefix from BBreite, BHoehe (your rules)
       const prefix = derivePrefix(BBreite, BHoehe); // implement rules in utils
+
+exports.previewBySize = async (req, res) => {
+  const { BBreite, BHoehe } = req.query;
+  if (!BBreite || !BHoehe) return res.status(400).json({ error: 'BBreite and BHoehe required' });
+
+  const prefix = derivePrefix(Number(BBreite), Number(BHoehe)); // same logic you use client-side
+  const candidate = await BMarkf.findOne({ BMark: new RegExp(`^${prefix}`, 'i') })
+    .sort({ rank: 1, BMark: 1 });
+  res.json(candidate || null);
+};
+
+
       const candidate = await BMarkf.findOne({ BMark: new RegExp(`^${prefix}`, 'i') })
         .sort({ rank: 1, BMark: 1 });
 

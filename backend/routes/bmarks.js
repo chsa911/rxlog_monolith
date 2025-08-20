@@ -5,11 +5,14 @@
       registerBook,
       releaseBMark,
     } = require('../controllers/bmarksController');
+const { previewBySize } = require('../controllers/bmarksController');
 
     const router = express.Router();
 
     // GET /api/bmarks/preview?prefix=egk
     router.get('/preview', previewBMark);
+
+router.get('/   preview-by-size', previewBySize);
 
     // POST /api/bmarks/register   (body contains book fields)
     router.post('/register', registerBook);
