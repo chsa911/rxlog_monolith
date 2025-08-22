@@ -1,4 +1,4 @@
-import BooksTable from "@/components/BooksTable";
+import BooksTable from "../components/BooksTable";
 
 export default function BooksPage() {
   return (

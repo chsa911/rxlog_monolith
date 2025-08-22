@@ -1,7 +1,7 @@
 // frontend/src/components/BooksTable.jsx
 import { useEffect, useState } from "react";
-import { fetchBooks, setTop, setStatus } from "@/api/books";
-import { useAppContext } from "@/context/AppContext";
+import { fetchBooks, setTop, setStatus } from "../api/books";
+import { useAppContext } from "../context/AppContext";
 
 export default function BooksTable() {
   const { refreshBooks } = useAppContext();

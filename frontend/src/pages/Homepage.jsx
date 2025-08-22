@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
-import { fetchBooks } from "@/api/books";
+import { fetchBooks } from "../api/books";
 
 export default function HomePage() {
   const navigate = useNavigate();

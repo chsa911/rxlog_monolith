@@ -1,8 +1,8 @@
 // frontend/src/components/RegistrationForm.jsx
 import { useState, useEffect } from "react";
-import { previewBMark, registerBook } from "@/api/bmarks";
-import { autocomplete } from "@/api/books";
-import { useAppContext } from "@/context/AppContext";
+import { previewBMark, registerBook } from "../api/bmarks";
+import { autocomplete } from "../api/books";
+import { useAppContext } from "../context/AppContext";
 
 export default function RegistrationForm({ onRegistered }) {
   const { refreshBooks } = useAppContext();

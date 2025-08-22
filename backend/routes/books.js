@@ -2,7 +2,9 @@ const express = require("express");
 const router = express.Router();
 const booksController = require("../controllers/booksController");
 
-// Register a new book
+// TEMP debug (remove after confirming)
+console.log("booksController keys:", Object.keys(booksController));
+
 router.post("/register", booksController.registerBook);
 router.get("/", booksController.listBooks);
 router.patch("/:id", booksController.updateBook);
