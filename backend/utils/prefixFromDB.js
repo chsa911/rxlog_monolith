@@ -31,3 +31,4 @@ async function sizeToPrefixFromDb(BBreite, BHoehe) {
     (b.hMax == null || h <  b.hMax)
   );
 
+};

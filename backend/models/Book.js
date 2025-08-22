@@ -1,7 +1,7 @@
 // backend/models/Book.js
-const mongoose = require('mongoose');
+const { Schema, model, models } = require('mongoose');
 
-const bookSchema = new mongoose.Schema({
+const bookSchema = new Schema({
   BBreite: { type: Number, required: true },   // width
   BHoehe: { type: Number, required: true },    // height
   BAutor: { type: String, required: true },
@@ -28,5 +28,5 @@ const bookSchema = new mongoose.Schema({
   // current active mark (belegt)
   BMarkb: { type: String, default: null, index: true },
 });
+module.exports = models.Book || model('Book', bookSchema);
 
-module.exports = mongoose.model('Book', bookSchema);
