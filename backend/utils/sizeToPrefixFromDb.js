@@ -1,190 +1,108 @@
-// utils/sizeToPrefixFromDb.js
-// cm-based size mapping with equals-first logic
+// backend/utils/sizeToPrefixFromDb.js
+const mongoose = require('mongoose');
 
-// --- helpers --------------------------------------------------------------
-
-/** normalize number: allow "12,5" or "12.5"; returns Number or null */
 function toNum(v) {
-  if (v === null || v === undefined) return null;
+  if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   const s = String(v).trim().replace(',', '.');
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
-
-/** round to 1 decimal for robust equals matching like 20.5 / 21 / 21.5 */
-function round1(n) {
-  return Math.round(n * 10) / 10;
-}
-
-/** band test: equals first, then range (h >= hMin && h < hMax) */
-function matchBand(h, band) {
-  const H = round1(h);
-  // equals first (if provided)
-  if (Array.isArray(band.equals) && band.equals.length) {
-    for (const val of band.equals) {
-      const ev = round1(toNum(val));
-      if (ev !== null && H === ev) return true;
-    }
-    // if equals exists and didn't match, do NOT fall back to range in this band
-    // (design: equals are exclusive to that band entry)
-    return false;
-  }
-  // range
-  const hMin = toNum(band.hMin);
-  const hMax = toNum(band.hMax);
-  const geMin = (hMin === null) || (H >= hMin);
-  const ltMax = (hMax === null) || (H < hMax);
-  return geMin && ltMax;
-}
-
-/** width window semantics: (wMin, wMax] */
-function matchWidth(w, rule) {
-  const W = toNum(w);
-  const wMin = toNum(rule.wMin);
-  const wMax = toNum(rule.wMax);
-  if (wMax === null) return false;     // we require an upper bound
-  const gtMin = (wMin === null) ? true : (W > wMin);
-  const leMax = (W <= wMax);
-  return gtMin && leMax;
-}
-
-// --- in-memory version (for tests / fallback) ----------------------------
-
-// equals set used across rules
-const EQUALS = [20.5, 21, 21.5];
-
-/** convenience creators */
-const bandRange = (hMin, hMax, prefix) => ({ hMin, hMax, equals: [], prefix });
-const bandEquals = (prefix) => ({ hMin: null, hMax: null, equals: EQUALS, prefix });
+const round1 = x => Math.round(x * 10) / 10;
 
 /**
- * Minimal demo rule table (CM!) matching your schema style.
- * Add the remaining sizes (4..20) following the same pattern.
+ * Reads rules from the raw 'sizerules' collection and supports BOTH schemas:
+ * A) wMin/wMax + bands[{hMin,hMax,equals,prefix}]
+ * B) minB/maxB/maxBInc + bands[{condition:'lt'|'eq'|'gt', value, values, prefix}]
  */
-const IN_MEMORY_RULES = [
-  // size 0: w <= 10.5
-  {
-    wMin: null, wMax: 10.5, priority: 10,
-    bands: [
-      bandRange(null, 17.5, 'egk'),
-      bandEquals('lgk'),
-      bandRange(17.5, null, 'ogk'),
-    ]
-  },
-  // size 1: (10.5, 11.3]
-  {
-    wMin: 10.5, wMax: 11.3, priority: 10,
-    bands: [
-      bandRange(null, 18, 'eak'),
-      bandEquals('lak'),
-      bandRange(18, null, 'oak'),
-    ]
-  },
-  // size 2: (11.3, 11.4]
-  {
-    wMin: 11.3, wMax: 11.4, priority: 10,
-    bands: [
-      bandRange(null, 18, 'ekb'),
-      // add more bands if needed
-    ]
-  },
-  // size 3: (11.4, 11.8]
-  {
-    wMin: 11.4, wMax: 11.8, priority: 10,
-    bands: [
-      bandRange(null, 18, 'eb'),
-      bandEquals('lb'),
-      bandRange(18, null, 'ob'),
-    ]
-  },
-  // ... add sizes 4..20 per your table
-];
+exports.sizeToPrefixFromDb = async function sizeToPrefixFromDb(BBreite, BHoehe) {
+  let w = toNum(BBreite);
+  let h = toNum(BHoehe);
+  if (w == null || h == null) return null;
 
-/**
- * In-memory cm-mapper (no DB). Returns prefix or null.
- */
-async function sizeToPrefixInMemory(BBreite, BHoehe) {
-  const w = toNum(BBreite);
-  const h = toNum(BHoehe);
-  if (w === null || h === null) return null;
+  // tolerate mm → convert big numbers to cm
+  if (w > 50) w /= 10;
+  if (h > 50) h /= 10;
 
-  // choose candidate rules by width window
-  const candidates = IN_MEMORY_RULES
-    .filter(r => matchWidth(w, r))
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.wMax ?? 0) - (b.wMax ?? 0));
+  w = round1(w);
+  h = round1(h);
 
-  for (const rule of candidates) {
-    // equals-first bands first, then range bands
-    const eqBands = rule.bands.filter(b => Array.isArray(b.equals) && b.equals.length);
-    for (const b of eqBands) {
-      if (matchBand(h, b)) return b.prefix;
+  // read raw documents to avoid model schema mismatches
+  const col = mongoose.connection.db.collection('sizerules');
+
+  // Fetch only fields we need
+  const rawRules = await col
+    .find({}, { projection: { wMin: 1, wMax: 1, priority: 1, bands: 1, minB: 1, maxB: 1, maxBInc: 1 } })
+    .toArray();
+
+  // Normalize to unified format: { wMin, wMax, includeMax, priority, bands:[{hMin,hMax,equals,prefix}] }
+  const norms = rawRules.map(r => {
+    const useAB = r.wMax != null || r.wMin != null; // schema A (old)
+    const useB  = r.minB != null || r.maxB != null; // schema B (your seed)
+
+    const wMin = useAB ? (r.wMin ?? null) : (useB ? (r.minB ?? null) : null);
+    const wMax = useAB ? (r.wMax ?? null) : (useB ? (r.maxB ?? null) : null);
+    const includeMax = useAB ? true : (useB ? (r.maxBInc !== false) : true); // default inclusive
+    const priority = r.priority ?? 0;
+
+    let bands = [];
+    if (useAB) {
+      bands = (r.bands || []).map(b => ({
+        hMin: b.hMin ?? null,
+        hMax: b.hMax ?? null,
+        equals: Array.isArray(b.equals) ? b.equals.map(toNum).filter(x => x != null).map(round1) : [],
+        prefix: b.prefix
+      }));
+    } else if (useB) {
+      bands = (r.bands || []).flatMap(b => {
+        if (b.condition === 'eq' && Array.isArray(b.values)) {
+          return [{ hMin: null, hMax: null, equals: b.values.map(toNum).filter(x => x != null).map(round1), prefix: b.prefix }];
+        }
+        if (b.condition === 'lt') {
+          const v = toNum(b.value);
+          if (v == null) return [];
+          return [{ hMin: null, hMax: v, equals: [], prefix: b.prefix }]; // h < v
+        }
+        if (b.condition === 'gt') {
+          const v = toNum(b.value);
+          if (v == null) return [];
+          return [{ hMin: v, hMax: null, equals: [], prefix: b.prefix }]; // h >= v
+        }
+        return [];
+      });
     }
-    const rangeBands = rule.bands.filter(b => !b.equals || !b.equals.length);
-    for (const b of rangeBands) {
-      if (matchBand(h, b)) return b.prefix;
-    }
-  }
-  return null;
-}
 
-// --- Mongo / SizeRule version --------------------------------------------
+    return { wMin, wMax, includeMax, priority, bands };
+  });
 
-/**
- * Mongo version. Requires models/SizeRule with:
- * {
- *   wMin: Number|null, wMax: Number, priority: Number,
- *   bands: [{ hMin:Number|null, hMax:Number|null, equals:[Number], prefix:String }]
- * }
- */
-async function sizeToPrefixFromDb(BBreite, BHoehe) {
-  const w = toNum(BBreite);
-  const h = toNum(BHoehe);
-  if (w === null || h === null) return null;
+  // Select width window: (wMin, wMax] by default, or (wMin, wMax] if includeMax=true, else (wMin, wMax)
+  // i.e. require w > wMin (or wMin null), and w <= wMax if includeMax else w < wMax
+  const matchesWidth = (rule) => {
+    if (rule.wMax == null) return false; // must have an upper bound to compare
+    const aboveMin = (rule.wMin == null) ? true : (w > rule.wMin);
+    const belowMax = rule.includeMax ? (w <= rule.wMax) : (w < rule.wMax);
+    return aboveMin && belowMax;
+  };
 
-  // lazy require to avoid circular imports
-  const SizeRule = require('../models/SizeRule');
+  const candidates = norms.filter(matchesWidth).sort((a, b) => {
+    // priority asc, then wMax asc (narrower first)
+    if ((a.priority ?? 0) !== (b.priority ?? 0)) return (a.priority ?? 0) - (b.priority ?? 0);
+    return (a.wMax ?? 0) - (b.wMax ?? 0);
+  });
 
-  // prefilter candidates by width window: (wMin, wMax]
-  // w <= wMax AND (wMin is null OR w > wMin)
-  const candidates = await SizeRule.find({
-    wMax: { $gte: w },
-    $or: [{ wMin: null }, { wMin: { $lt: w } }],
-  })
-    .sort({ priority: -1, wMax: 1 })  // higher priority first, then tighter upper bound
-    .lean();
-
-  if (!candidates || !candidates.length) return null;
-
-  const H = round1(h);
-
-  // within each rule: equals-first, then ranges
-  for (const rule of candidates) {
-    if (!matchWidth(w, rule)) continue; // safety (due to null/strictness nuances)
-
-    const bands = Array.isArray(rule.bands) ? rule.bands : [];
-
-    // equals-first
-    for (const band of bands) {
-      if (Array.isArray(band.equals) && band.equals.length) {
-        const anyEq = band.equals.some(v => round1(toNum(v)) === H);
-        if (anyEq) return band.prefix;
+  // Now pick band by height: equals first, then ranges (h >= hMin, h < hMax)
+  for (const r of candidates) {
+    for (const b of r.bands) {
+      if (b.equals && b.equals.length) {
+        if (b.equals.includes(h)) return b.prefix;
       }
     }
-    // ranges next
-    for (const band of bands) {
-      if (!band.equals || !band.equals.length) {
-        if (matchBand(h, band)) return band.prefix;
-      }
+    for (const b of r.bands) {
+      const okMin = b.hMin == null ? true : (h >= round1(b.hMin));
+      const okMax = b.hMax == null ? true : (h < round1(b.hMax)); // exclusive upper
+      if (okMin && okMax) return b.prefix;
     }
   }
 
   return null;
-}
-
-module.exports = {
-  sizeToPrefixFromDb,
-  sizeToPrefixInMemory,
-  // expose helpers for tests if you like:
-  _priv: { toNum, round1, matchBand, matchWidth, IN_MEMORY_RULES, EQUALS }
 };

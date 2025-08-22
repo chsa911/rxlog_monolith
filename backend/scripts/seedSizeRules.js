@@ -4,6 +4,9 @@ require('dotenv').config();
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bmarkdb';
 
+await mongoose.connect(MONGO_URI);
+console.log('✅ Seed connected to DB:', mongoose.connection.db.databaseName);
+
 // Define Schema for SizeRule
 const sizeRuleSchema = new mongoose.Schema({
   minB: Number,
