@@ -121,49 +121,101 @@ exports.listBooks = async (req, res) => {
  */
 exports.registerBook = async (req, res) => {
   try {
+    console.log('[registerBook] raw body:', req.body);
+
+    // Accept "12,5" or "12.5"
+    const toNum = v => {
+      if (v == null) return null;
+      const n = Number(String(v).trim().replace(',', '.'));
+      return Number.isFinite(n) ? n : null;
+    };
+
     const { BBreite, BHoehe, ...fields } = req.body;
     const w = toNum(BBreite);
     const h = toNum(BHoehe);
+    console.log('[registerBook] parsed w,h =', w, h);
 
     if (w === null || h === null) {
+      console.error('[registerBook] invalid width/height', { BBreite, BHoehe });
       return res.status(400).json({ error: 'BBreite and BHoehe (cm) are required' });
     }
 
-    const prefix = await sizeToPrefixFromDb(w, h);
+    // map (w,h) -> prefix
+    let prefix;
+    try {
+      prefix = await sizeToPrefixFromDb(w, h);
+      console.log('[registerBook] sizeToPrefixFromDb ->', prefix);
+    } catch (e) {
+      console.error('[registerBook] sizeToPrefixFromDb failed:', e);
+      return res.status(500).json({ error: 'sizeToPrefixFromDb failed: ' + (e.message || e) });
+    }
     if (!prefix) {
       return res.status(400).json({ error: 'No matching size rule' });
     }
 
-    // 1st attempt: exact prefix
+    // consume a free BMark
     let picked = await BMarkf.findOneAndDelete(
       { BMark: new RegExp(`^${prefix}`, 'i') },
       { sort: { BMark: 1, rank: 1 } }
     ).lean();
+    console.log('[registerBook] picked (exact):', picked?.BMark);
 
-    // fallback: if prefix ends with 'i', try 'ik'
+    // fallback i -> ik
     if (!picked && /i$/i.test(prefix)) {
       const alt = `${prefix}k`;
       picked = await BMarkf.findOneAndDelete(
         { BMark: new RegExp(`^${alt}`, 'i') },
         { sort: { BMark: 1, rank: 1 } }
       ).lean();
+      console.log('[registerBook] picked (fallback i->ik):', picked?.BMark);
     }
 
     if (!picked) {
+      console.error('[registerBook] no free mark for prefix', prefix);
       return res.status(409).json({ error: `No free BMark for prefix ${prefix}` });
     }
+// --- normalize status fields coming from the form ---
 
+// BHVorV: "H" or "V"; ignore empty strings
+if (typeof fields.BHVorV === 'string') {
+  const val = fields.BHVorV.trim().toUpperCase();
+  if (val === '') {
+    delete fields.BHVorV;           // do not send empty string to schema
+  } else if (val === 'H' || val === 'V') {
+    fields.BHVorV = val;
+    fields.BHVorVAt = new Date();   // set timestamp when user chose H/V
+  } else {
+    return res.status(400).json({ error: 'BHVorV must be H or V' });
+  }
+}
+
+// BTop: boolean with timestamp when true
+if (typeof fields.BTop !== 'undefined') {
+  fields.BTop = !!fields.BTop;
+  fields.BTopAt = fields.BTop ? new Date() : null;
+}
+
+    // create the book
     const doc = await Book.create({
       BBreite: w,
       BHoehe: h,
       ...fields,
       BMarkb: picked.BMark,
     });
+    console.log('[registerBook] created book _id:', doc._id);
 
-    res.json({ ...doc.toObject(), status: getStatus(doc) });
+    // guard getStatus
+    let status = null;
+    try {
+      status = typeof getStatus === 'function' ? getStatus(doc) : null;
+    } catch (e) {
+      console.warn('[registerBook] getStatus failed:', e);
+    }
+
+    res.json({ ...doc.toObject(), status });
   } catch (err) {
     console.error('registerBook error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 };
 
@@ -263,7 +315,9 @@ exports.deleteBook = async (req, res) => {
  */
 exports.autocomplete = async (req, res) => {
   try {
-    const { field, q } = req.query;
+    const field = req.params.field || req.query.field;   // <—
+    const { q } = req.query;
+
     const ALLOWED = new Set(['BAutor', 'BKw', 'BVerlag']);
     if (!ALLOWED.has(field)) return res.status(400).json({ error: 'Invalid field' });
     if (!q || String(q).trim().length < 1) return res.json([]);
@@ -282,3 +336,4 @@ exports.autocomplete = async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 };
+
