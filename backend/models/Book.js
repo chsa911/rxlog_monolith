@@ -15,15 +15,13 @@ const bookSchema = new Schema({
   BSeiten: { type: Number, required: true, max: 9999 },
   BEind: { type: Date, default: Date.now },     // registration date
 
-  // Control fields
-  BTop: { type: Boolean, default: false },
-  BTopAt: { type: Date, default: null },
+BHVorV:   { type: String, enum: ['H','V', null], default: null },
+BHVorVAt: { type: Date, default: null },
+BTop:     { type: Boolean, default: false },
+BTopAt:   { type: Date, default: null },
 
-  BHistorisiert: { type: Boolean, default: false },
-  BHistorisiertAt: { type: Date, default: null },
-
-  BVorzeitig: { type: Boolean, default: false },
-  BVorzeitigAt: { type: Date, default: null },
+BHVorV:   { type: String, enum: ['H', 'V', null], default: null },
+BHVorVAt: { type: Date, default: null },
 
   // current active mark (belegt)
   BMarkb: { type: String, default: null, index: true },

@@ -106,6 +106,8 @@ export default function RegistrationForm({ onRegistered }) {
         BK1P: form.BK1P ? Number(form.BK1P) : null,
         BK2P: form.BK2P ? Number(form.BK2P) : null,
         BSeiten: Number(form.BSeiten),
+      BHVorV: "", // '', 'H', or 'V'
+
       };
 
       const saved = await registerBook(payload);
@@ -243,6 +245,31 @@ export default function RegistrationForm({ onRegistered }) {
             className="border p-2 rounded"
           />
         </label>
+<div className="flex flex-col gap-1">
+  <span className="font-medium">Ausrichtung</span>
+  <div className="flex items-center gap-6">
+    <label className="inline-flex items-center gap-2">
+      <input
+        type="radio"
+        name="BHVorV"
+        value="H"
+        checked={form.BHVorV === "H"}
+        onChange={setField("BHVorV")}
+      />
+      <span>H</span>
+    </label>
+    <label className="inline-flex items-center gap-2">
+      <input
+        type="radio"
+        name="BHVorV"
+        value="V"
+        checked={form.BHVorV === "V"}
+        onChange={setField("BHVorV")}
+      />
+      <span>V</span>
+    </label>
+  </div>
+</div>
 
         <label className="flex items-center gap-2 mt-1">
           <input type="checkbox" checked={form.BTop} onChange={setField("BTop")} />

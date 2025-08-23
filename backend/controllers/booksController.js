@@ -15,6 +15,37 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
+exports.updateBook = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = { ...req.body };
+
+    // Coerce numbers if provided
+    if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
+    if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
+
+    // Timestamps for Top
+    if (typeof body.BTop === 'boolean') {
+      body.BTopAt = body.BTop ? new Date() : null;
+    }
+
+    // Timestamp for H/V — only if provided
+    if (body.BHVorV === 'H' || body.BHVorV === 'V') {
+      body.BHVorVAt = new Date();
+    }
+
+    const updated = await Book.findByIdAndUpdate(id, body, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!updated) return res.status(404).json({ error: 'Book not found' });
+    res.json({ ...updated.toObject(), status: getStatus(updated) });
+  } catch (err) {
+    console.error('updateBook error:', err);
+    res.status(400).json({ error: err.message || 'Bad request' });
+  }
+};
 
 /* ------------------------- list books ------------------------- */
 /**
