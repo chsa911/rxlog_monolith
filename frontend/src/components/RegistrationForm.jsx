@@ -1,6 +1,5 @@
-// frontend/src/components/RegistrationForm.jsx
 import { useState, useEffect } from "react";
-import { prefixBySize, previewBySize, registerBook } from "../api/bmarks";
+import { previewBMark, registerBook } from "../api/bmarks";
 import { autocomplete } from "../api/books";
 import { useAppContext } from "../context/AppContext";
 
@@ -22,65 +21,55 @@ export default function RegistrationForm({ onRegistered }) {
     BTop: false,
   });
 
+  const [suggestedMark, setSuggestedMark] = useState(null);
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState({
     BAutor: [],
     BKw: [],
+    BKw1: [],
+    BKw2: [],
     BVerlag: [],
   });
 
-  const [computedPrefix, setComputedPrefix] = useState(null);
-  const [suggestedMark, setSuggestedMark] = useState(null);
-  const [previewError, setPreviewError] = useState("");
+  // very simple local prefix; backend does the real mapping
+  function derivePrefix(BBreite, BHoehe) {
+    const w = Number(BBreite);
+    if (!Number.isFinite(w)) return null;
+    if (w <= 12.5) return "egk";
+    if (w <= 22) return "lgk";
+    return "ogk";
+  }
 
-  // helper: normalize 12,5 → "12.5" for calls, but keep raw in inputs
-  const norm = (v) => (v == null ? "" : String(v).trim().replace(",", "."));
-
-  // Live compute prefix + preview available mark
+  // live preview of next mark
   useEffect(() => {
-    setPreviewError("");
-    setSuggestedMark(null);
-    setComputedPrefix(null);
-
-    const wRaw = form.BBreite?.toString().trim();
-    const hRaw = form.BHoehe?.toString().trim();
-    if (!wRaw || !hRaw) return;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(async () => {
-      try {
-        // 1) compute prefix from backend rules
-        const { prefix } = await prefixBySize(norm(wRaw), norm(hRaw));
-        setComputedPrefix(prefix ?? null);
-
-        // 2) preview first available mark in pool for that size
-        if (prefix) {
-          const m = await previewBySize(norm(wRaw), norm(hRaw));
-          setSuggestedMark(m?.BMark || null);
-        } else {
-          setSuggestedMark(null);
-        }
-      } catch (e) {
-        console.error("[RegistrationForm] preview failed:", e);
-        setPreviewError(e.message || "Preview fehlgeschlagen");
-      }
-    }, 250); // debounce
-
-    return () => {
-      controller.abort();
-      clearTimeout(timeout);
-    };
+    const w = Number(form.BBreite);
+    const h = Number(form.BHoehe);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || !form.BBreite || !form.BHoehe) {
+      setSuggestedMark(null);
+      return;
+    }
+    const prefix = derivePrefix(w, h);
+    if (!prefix) {
+      setSuggestedMark(null);
+      return;
+    }
+    previewBMark(prefix)
+      .then((m) => setSuggestedMark(m?.BMark || null))
+      .catch(() => setSuggestedMark(null));
   }, [form.BBreite, form.BHoehe]);
 
-  // Autocomplete fetch
   async function handleAutocomplete(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
+
+    // Map BKw1 & BKw2 to the same backend autocomplete as BKw
+    const backendField = field === "BKw1" || field === "BKw2" ? "BKw" : field;
+
     if (value && value.length > 1) {
       try {
-        const vals = await autocomplete(field, value);
+        const vals = await autocomplete(backendField, value);
         setSuggestions((s) => ({ ...s, [field]: vals }));
       } catch {
-        // ignore errors
+        // ignore autocomplete errors
       }
     }
   }
@@ -97,25 +86,21 @@ export default function RegistrationForm({ onRegistered }) {
     e.preventDefault();
     setBusy(true);
     try {
-      // Prepare payload, numbers normalized
       const payload = {
         ...form,
-        BBreite: Number(norm(form.BBreite)),
-        BHoehe: Number(norm(form.BHoehe)),
+        BBreite: Number(form.BBreite),
+        BHoehe: Number(form.BHoehe),
         BKP: Number(form.BKP || 0),
-        BK1P: form.BK1P ? Number(form.BK1P) : null,
-        BK2P: form.BK2P ? Number(form.BK2P) : null,
+        BK1P: form.BK1P !== "" ? Number(form.BK1P) : null,
+        BK2P: form.BK2P !== "" ? Number(form.BK2P) : null,
         BSeiten: Number(form.BSeiten),
-      BHVorV: "", // '', 'H', or 'V'
-
       };
 
       const saved = await registerBook(payload);
-
       refreshBooks?.();
       onRegistered && onRegistered(saved);
 
-      // reset minimal fields
+      // reset
       setForm({
         BBreite: "",
         BHoehe: "",
@@ -130,9 +115,7 @@ export default function RegistrationForm({ onRegistered }) {
         BSeiten: "",
         BTop: false,
       });
-      setComputedPrefix(null);
       setSuggestedMark(null);
-      setPreviewError("");
     } catch (err) {
       alert(typeof err === "string" ? err : err?.message || "Fehler beim Speichern");
     } finally {
@@ -147,142 +130,102 @@ export default function RegistrationForm({ onRegistered }) {
       <div className="grid gap-2 md:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span>Breite (BBreite)</span>
-          {/* use type="text" so users can type comma; we normalize in code */}
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder="z.B. 11,2"
-            required
-            value={form.BBreite}
-            onChange={setField("BBreite")}
-            className="border p-2 rounded"
-          />
+          <input type="number" required value={form.BBreite} onChange={setField("BBreite")} className="border p-2 rounded" step="0.1" />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Höhe (BHoehe)</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder="z.B. 17,8"
-            required
-            value={form.BHoehe}
-            onChange={setField("BHoehe")}
-            className="border p-2 rounded"
-          />
+          <input type="number" required value={form.BHoehe} onChange={setField("BHoehe")} className="border p-2 rounded" step="0.1" />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Autor (BAutor)</span>
-          <input
-            list="autor-list"
-            required
-            value={form.BAutor}
-            onChange={(e) => handleAutocomplete("BAutor", e.target.value)}
-            className="border p-2 rounded"
-          />
-          <datalist id="autor-list">
-            {suggestions.BAutor.map((v) => (
-              <option key={v} value={v} />
-            ))}
-          </datalist>
+          <input list="autor-list" required value={form.BAutor} onChange={(e) => handleAutocomplete("BAutor", e.target.value)} className="border p-2 rounded" />
+          <datalist id="autor-list">{suggestions.BAutor.map((v) => <option key={v} value={v} />)}</datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Stichwort (BKw)</span>
-          <input
-            list="kw-list"
-            required
-            maxLength={25}
-            value={form.BKw}
-            onChange={(e) => handleAutocomplete("BKw", e.target.value)}
-            className="border p-2 rounded"
-          />
-          <datalist id="kw-list">
-            {suggestions.BKw.map((v) => (
-              <option key={v} value={v} />
-            ))}
-          </datalist>
+          <input list="kw-list" required maxLength={25} value={form.BKw} onChange={(e) => handleAutocomplete("BKw", e.target.value)} className="border p-2 rounded" />
+          <datalist id="kw-list">{suggestions.BKw.map((v) => <option key={v} value={v} />)}</datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Position Stichwort (BKP)</span>
-          <input
-            type="number"
-            required
-            max={2}
-            value={form.BKP}
-            onChange={setField("BKP")}
-            className="border p-2 rounded"
-          />
+          <input type="number" required max={2} value={form.BKP} onChange={setField("BKP")} className="border p-2 rounded" />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Verlag (BVerlag)</span>
-          <input
-            list="verlag-list"
-            required
-            maxLength={25}
-            value={form.BVerlag}
-            onChange={(e) => handleAutocomplete("BVerlag", e.target.value)}
-            className="border p-2 rounded"
-          />
-          <datalist id="verlag-list">
-            {suggestions.BVerlag.map((v) => (
-              <option key={v} value={v} />
-            ))}
-          </datalist>
+          <input list="verlag-list" required maxLength={25} value={form.BVerlag} onChange={(e) => handleAutocomplete("BVerlag", e.target.value)} className="border p-2 rounded" />
+          <datalist id="verlag-list">{suggestions.BVerlag.map((v) => <option key={v} value={v} />)}</datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Seiten (BSeiten)</span>
+          <input type="number" required max={9999} value={form.BSeiten} onChange={setField("BSeiten")} className="border p-2 rounded" />
+        </label>
+
+        {/* --- NEW: BKw1 / BK1P --- */}
+        <label className="flex flex-col gap-1">
+          <span>2. Stichwort (BKw1)</span>
+          <input
+            list="kw1-list"
+            maxLength={25}
+            value={form.BKw1}
+            onChange={(e) => handleAutocomplete("BKw1", e.target.value)}
+            className="border p-2 rounded"
+            placeholder="optional"
+          />
+          <datalist id="kw1-list">{suggestions.BKw1.map((v) => <option key={v} value={v} />)}</datalist>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span>Position 2. Stichwort (BK1P)</span>
           <input
             type="number"
-            required
-            max={9999}
-            value={form.BSeiten}
-            onChange={setField("BSeiten")}
+            max={2}
+            value={form.BK1P}
+            onChange={setField("BK1P")}
             className="border p-2 rounded"
+            placeholder="optional"
           />
         </label>
-<div className="flex flex-col gap-1">
-  <span className="font-medium">Ausrichtung</span>
-  <div className="flex items-center gap-6">
-    <label className="inline-flex items-center gap-2">
-      <input
-        type="radio"
-        name="BHVorV"
-        value="H"
-        checked={form.BHVorV === "H"}
-        onChange={setField("BHVorV")}
-      />
-      <span>H</span>
-    </label>
-    <label className="inline-flex items-center gap-2">
-      <input
-        type="radio"
-        name="BHVorV"
-        value="V"
-        checked={form.BHVorV === "V"}
-        onChange={setField("BHVorV")}
-      />
-      <span>V</span>
-    </label>
-  </div>
-</div>
 
-        <label className="flex items-center gap-2 mt-1">
+        {/* --- NEW: BKw2 / BK2P --- */}
+        <label className="flex flex-col gap-1">
+          <span>3. Stichwort (BKw2)</span>
+          <input
+            list="kw2-list"
+            maxLength={25}
+            value={form.BKw2}
+            onChange={(e) => handleAutocomplete("BKw2", e.target.value)}
+            className="border p-2 rounded"
+            placeholder="optional"
+          />
+          <datalist id="kw2-list">{suggestions.BKw2.map((v) => <option key={v} value={v} />)}</datalist>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span>Position 3. Stichwort (BK2P)</span>
+          <input
+            type="number"
+            max={2}
+            value={form.BK2P}
+            onChange={setField("BK2P")}
+            className="border p-2 rounded"
+            placeholder="optional"
+          />
+        </label>
+
+        <label className="flex items-center gap-2 mt-1 md:col-span-2">
           <input type="checkbox" checked={form.BTop} onChange={setField("BTop")} />
           <span>Top-Titel (BTop)</span>
         </label>
       </div>
 
-      <div className="p-3 border rounded bg-gray-50 text-sm space-y-1">
-        <div>Ermitteltes Prefix: <b>{computedPrefix ?? "—"}</b></div>
-        <div>
-          Nächster freier BMark: <b>{suggestedMark ?? (computedPrefix ? "— (kein frei)" : "—")}</b>
-        </div>
-        {previewError && <div className="text-red-600">{previewError}</div>}
+      <div className="text-sm">
+        Vorschlag BMark:&nbsp;<strong>{suggestedMark ?? "—"}</strong>
       </div>
 
       <button disabled={busy} type="submit" className="bg-blue-600 text-white px-4 py-2 rounded">
