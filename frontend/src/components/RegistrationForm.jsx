@@ -1,6 +1,6 @@
 // frontend/src/components/RegistrationForm.jsx
 import { useState, useEffect } from "react";
-import { previewBMark, registerBook } from "../api/bmarks";
+import { prefixBySize, previewBySize, registerBook } from "../api/bmarks";
 import { autocomplete } from "../api/books";
 import { useAppContext } from "../context/AppContext";
 
@@ -22,7 +22,6 @@ export default function RegistrationForm({ onRegistered }) {
     BTop: false,
   });
 
-  const [suggestedMark, setSuggestedMark] = useState(null);
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState({
     BAutor: [],
@@ -30,25 +29,47 @@ export default function RegistrationForm({ onRegistered }) {
     BVerlag: [],
   });
 
-  // build prefix from size (keep in sync with backend logic)
-  function derivePrefix(BBreite, BHoehe) {
-    const w = Number(BBreite);
-    // Example rule — replace with your real thresholds:
-    if (w <= 12.5) return "egk";
-    if (w <= 22) return "lgk";
-    return "ogk";
-  }
+  const [computedPrefix, setComputedPrefix] = useState(null);
+  const [suggestedMark, setSuggestedMark] = useState(null);
+  const [previewError, setPreviewError] = useState("");
 
-  // Live preview best BMark
+  // helper: normalize 12,5 → "12.5" for calls, but keep raw in inputs
+  const norm = (v) => (v == null ? "" : String(v).trim().replace(",", "."));
+
+  // Live compute prefix + preview available mark
   useEffect(() => {
-    const w = Number(form.BBreite);
-    const h = Number(form.BHoehe);
-    if (!Number.isFinite(w) || !Number.isFinite(h) || !form.BBreite || !form.BHoehe) {
-      setSuggestedMark(null);
-      return;
-    }
-    const prefix = derivePrefix(w, h);
-    previewBMark(prefix).then((m) => setSuggestedMark(m?.BMark || null)).catch(() => setSuggestedMark(null));
+    setPreviewError("");
+    setSuggestedMark(null);
+    setComputedPrefix(null);
+
+    const wRaw = form.BBreite?.toString().trim();
+    const hRaw = form.BHoehe?.toString().trim();
+    if (!wRaw || !hRaw) return;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      try {
+        // 1) compute prefix from backend rules
+        const { prefix } = await prefixBySize(norm(wRaw), norm(hRaw));
+        setComputedPrefix(prefix ?? null);
+
+        // 2) preview first available mark in pool for that size
+        if (prefix) {
+          const m = await previewBySize(norm(wRaw), norm(hRaw));
+          setSuggestedMark(m?.BMark || null);
+        } else {
+          setSuggestedMark(null);
+        }
+      } catch (e) {
+        console.error("[RegistrationForm] preview failed:", e);
+        setPreviewError(e.message || "Preview fehlgeschlagen");
+      }
+    }, 250); // debounce
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
   }, [form.BBreite, form.BHoehe]);
 
   // Autocomplete fetch
@@ -59,32 +80,39 @@ export default function RegistrationForm({ onRegistered }) {
         const vals = await autocomplete(field, value);
         setSuggestions((s) => ({ ...s, [field]: vals }));
       } catch {
-        // ignore
+        // ignore errors
       }
     }
   }
 
   function setField(name) {
-    return (e) => setForm((f) => ({ ...f, [name]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+    return (e) =>
+      setForm((f) => ({
+        ...f,
+        [name]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
+      }));
   }
 
   async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     try {
-      // server will stamp BTopAt if BTop is true in registerBook controller (if you added that)
+      // Prepare payload, numbers normalized
       const payload = {
         ...form,
-        BBreite: Number(form.BBreite),
-        BHoehe: Number(form.BHoehe),
+        BBreite: Number(norm(form.BBreite)),
+        BHoehe: Number(norm(form.BHoehe)),
         BKP: Number(form.BKP || 0),
         BK1P: form.BK1P ? Number(form.BK1P) : null,
         BK2P: form.BK2P ? Number(form.BK2P) : null,
         BSeiten: Number(form.BSeiten),
       };
+
       const saved = await registerBook(payload);
-      refreshBooks();                 // notify global listeners
+
+      refreshBooks?.();
       onRegistered && onRegistered(saved);
+
       // reset minimal fields
       setForm({
         BBreite: "",
@@ -100,7 +128,9 @@ export default function RegistrationForm({ onRegistered }) {
         BSeiten: "",
         BTop: false,
       });
+      setComputedPrefix(null);
       setSuggestedMark(null);
+      setPreviewError("");
     } catch (err) {
       alert(typeof err === "string" ? err : err?.message || "Fehler beim Speichern");
     } finally {
@@ -115,40 +145,103 @@ export default function RegistrationForm({ onRegistered }) {
       <div className="grid gap-2 md:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span>Breite (BBreite)</span>
-          <input type="number" required value={form.BBreite} onChange={setField("BBreite")} className="border p-2 rounded" />
+          {/* use type="text" so users can type comma; we normalize in code */}
+          <input
+            type="text"
+            inputMode="decimal"
+            placeholder="z.B. 11,2"
+            required
+            value={form.BBreite}
+            onChange={setField("BBreite")}
+            className="border p-2 rounded"
+          />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Höhe (BHoehe)</span>
-          <input type="number" required value={form.BHoehe} onChange={setField("BHoehe")} className="border p-2 rounded" />
+          <input
+            type="text"
+            inputMode="decimal"
+            placeholder="z.B. 17,8"
+            required
+            value={form.BHoehe}
+            onChange={setField("BHoehe")}
+            className="border p-2 rounded"
+          />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Autor (BAutor)</span>
-          <input list="autor-list" required value={form.BAutor} onChange={(e) => handleAutocomplete("BAutor", e.target.value)} className="border p-2 rounded" />
-          <datalist id="autor-list">{suggestions.BAutor.map((v) => <option key={v} value={v} />)}</datalist>
+          <input
+            list="autor-list"
+            required
+            value={form.BAutor}
+            onChange={(e) => handleAutocomplete("BAutor", e.target.value)}
+            className="border p-2 rounded"
+          />
+          <datalist id="autor-list">
+            {suggestions.BAutor.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Stichwort (BKw)</span>
-          <input list="kw-list" required maxLength={25} value={form.BKw} onChange={(e) => handleAutocomplete("BKw", e.target.value)} className="border p-2 rounded" />
-          <datalist id="kw-list">{suggestions.BKw.map((v) => <option key={v} value={v} />)}</datalist>
+          <input
+            list="kw-list"
+            required
+            maxLength={25}
+            value={form.BKw}
+            onChange={(e) => handleAutocomplete("BKw", e.target.value)}
+            className="border p-2 rounded"
+          />
+          <datalist id="kw-list">
+            {suggestions.BKw.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Position Stichwort (BKP)</span>
-          <input type="number" required max={2} value={form.BKP} onChange={setField("BKP")} className="border p-2 rounded" />
+          <input
+            type="number"
+            required
+            max={2}
+            value={form.BKP}
+            onChange={setField("BKP")}
+            className="border p-2 rounded"
+          />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Verlag (BVerlag)</span>
-          <input list="verlag-list" required maxLength={25} value={form.BVerlag} onChange={(e) => handleAutocomplete("BVerlag", e.target.value)} className="border p-2 rounded" />
-          <datalist id="verlag-list">{suggestions.BVerlag.map((v) => <option key={v} value={v} />)}</datalist>
+          <input
+            list="verlag-list"
+            required
+            maxLength={25}
+            value={form.BVerlag}
+            onChange={(e) => handleAutocomplete("BVerlag", e.target.value)}
+            className="border p-2 rounded"
+          />
+          <datalist id="verlag-list">
+            {suggestions.BVerlag.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Seiten (BSeiten)</span>
-          <input type="number" required max={9999} value={form.BSeiten} onChange={setField("BSeiten")} className="border p-2 rounded" />
+          <input
+            type="number"
+            required
+            max={9999}
+            value={form.BSeiten}
+            onChange={setField("BSeiten")}
+            className="border p-2 rounded"
+          />
         </label>
 
         <label className="flex items-center gap-2 mt-1">
@@ -157,9 +250,12 @@ export default function RegistrationForm({ onRegistered }) {
         </label>
       </div>
 
-      <div className="text-sm">
-        Vorschlag BMark:&nbsp;
-        <strong>{suggestedMark ?? "—"}</strong>
+      <div className="p-3 border rounded bg-gray-50 text-sm space-y-1">
+        <div>Ermitteltes Prefix: <b>{computedPrefix ?? "—"}</b></div>
+        <div>
+          Nächster freier BMark: <b>{suggestedMark ?? (computedPrefix ? "— (kein frei)" : "—")}</b>
+        </div>
+        {previewError && <div className="text-red-600">{previewError}</div>}
       </div>
 
       <button disabled={busy} type="submit" className="bg-blue-600 text-white px-4 py-2 rounded">
