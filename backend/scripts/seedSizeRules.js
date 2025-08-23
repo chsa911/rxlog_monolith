@@ -131,7 +131,7 @@ async function seed() {
       },
       // ---- Size 10 ----
       {
-        minB: 13,
+        minB: 13.4,
         maxB: 13.5,
         maxBInc: true,
         bands: [

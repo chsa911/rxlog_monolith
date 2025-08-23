@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { previewBMark, registerBook } from "../api/bmarks";
+import { previewBySize, registerBook } from "../api/bmarks"; // ✅ use size-based preview
 import { autocomplete } from "../api/books";
 import { useAppContext } from "../context/AppContext";
 
@@ -31,46 +31,34 @@ export default function RegistrationForm({ onRegistered }) {
     BVerlag: [],
   });
 
-  // very simple local prefix; backend does the real mapping
-  function derivePrefix(BBreite, BHoehe) {
-    const w = Number(BBreite);
-    if (!Number.isFinite(w)) return null;
-    if (w <= 12.5) return "egk";
-    if (w <= 22) return "lgk";
-    return "ogk";
-  }
-
-  // live preview of next mark
+  // 🔄 Live preview using backend size rules
   useEffect(() => {
-    const w = Number(form.BBreite);
-    const h = Number(form.BHoehe);
-    if (!Number.isFinite(w) || !Number.isFinite(h) || !form.BBreite || !form.BHoehe) {
-      setSuggestedMark(null);
-      return;
-    }
-    const prefix = derivePrefix(w, h);
-    if (!prefix) {
-      setSuggestedMark(null);
-      return;
-    }
-    previewBMark(prefix)
-      .then((m) => setSuggestedMark(m?.BMark || null))
-      .catch(() => setSuggestedMark(null));
+    const w = form.BBreite?.toString().trim();
+    const h = form.BHoehe?.toString().trim();
+    if (!w || !h) { setSuggestedMark(null); return; }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await previewBySize(w, h); // { _id, BMark, rank } | null
+        if (!cancelled) setSuggestedMark(m?.BMark || null);
+      } catch {
+        if (!cancelled) setSuggestedMark(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [form.BBreite, form.BHoehe]);
 
   async function handleAutocomplete(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
 
-    // Map BKw1 & BKw2 to the same backend autocomplete as BKw
     const backendField = field === "BKw1" || field === "BKw2" ? "BKw" : field;
-
     if (value && value.length > 1) {
       try {
         const vals = await autocomplete(backendField, value);
         setSuggestions((s) => ({ ...s, [field]: vals }));
-      } catch {
-        // ignore autocomplete errors
-      }
+      } catch { /* ignore */ }
     }
   }
 
@@ -88,8 +76,8 @@ export default function RegistrationForm({ onRegistered }) {
     try {
       const payload = {
         ...form,
-        BBreite: Number(form.BBreite),
-        BHoehe: Number(form.BHoehe),
+        BBreite: Number(String(form.BBreite).replace(",", ".")),
+        BHoehe: Number(String(form.BHoehe).replace(",", ".")),
         BKP: Number(form.BKP || 0),
         BK1P: form.BK1P !== "" ? Number(form.BK1P) : null,
         BK2P: form.BK2P !== "" ? Number(form.BK2P) : null,
@@ -100,7 +88,6 @@ export default function RegistrationForm({ onRegistered }) {
       refreshBooks?.();
       onRegistered && onRegistered(saved);
 
-      // reset
       setForm({
         BBreite: "",
         BHoehe: "",
@@ -166,56 +153,27 @@ export default function RegistrationForm({ onRegistered }) {
           <input type="number" required max={9999} value={form.BSeiten} onChange={setField("BSeiten")} className="border p-2 rounded" />
         </label>
 
-        {/* --- NEW: BKw1 / BK1P --- */}
+        {/* 2./3. Stichwort optional */}
         <label className="flex flex-col gap-1">
           <span>2. Stichwort (BKw1)</span>
-          <input
-            list="kw1-list"
-            maxLength={25}
-            value={form.BKw1}
-            onChange={(e) => handleAutocomplete("BKw1", e.target.value)}
-            className="border p-2 rounded"
-            placeholder="optional"
-          />
+          <input list="kw1-list" maxLength={25} value={form.BKw1} onChange={(e) => handleAutocomplete("BKw1", e.target.value)} className="border p-2 rounded" placeholder="optional" />
           <datalist id="kw1-list">{suggestions.BKw1.map((v) => <option key={v} value={v} />)}</datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Position 2. Stichwort (BK1P)</span>
-          <input
-            type="number"
-            max={2}
-            value={form.BK1P}
-            onChange={setField("BK1P")}
-            className="border p-2 rounded"
-            placeholder="optional"
-          />
+          <input type="number" max={2} value={form.BK1P} onChange={setField("BK1P")} className="border p-2 rounded" placeholder="optional" />
         </label>
 
-        {/* --- NEW: BKw2 / BK2P --- */}
         <label className="flex flex-col gap-1">
           <span>3. Stichwort (BKw2)</span>
-          <input
-            list="kw2-list"
-            maxLength={25}
-            value={form.BKw2}
-            onChange={(e) => handleAutocomplete("BKw2", e.target.value)}
-            className="border p-2 rounded"
-            placeholder="optional"
-          />
+          <input list="kw2-list" maxLength={25} value={form.BKw2} onChange={(e) => handleAutocomplete("BKw2", e.target.value)} className="border p-2 rounded" placeholder="optional" />
           <datalist id="kw2-list">{suggestions.BKw2.map((v) => <option key={v} value={v} />)}</datalist>
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Position 3. Stichwort (BK2P)</span>
-          <input
-            type="number"
-            max={2}
-            value={form.BK2P}
-            onChange={setField("BK2P")}
-            className="border p-2 rounded"
-            placeholder="optional"
-          />
+          <input type="number" max={2} value={form.BK2P} onChange={setField("BK2P")} className="border p-2 rounded" placeholder="optional" />
         </label>
 
         <label className="flex items-center gap-2 mt-1 md:col-span-2">
@@ -225,7 +183,7 @@ export default function RegistrationForm({ onRegistered }) {
       </div>
 
       <div className="text-sm">
-        Vorschlag BMark:&nbsp;<strong>{suggestedMark ?? "—"}</strong>
+        Vorschlag BMark: <strong>{suggestedMark ?? "—"}</strong>
       </div>
 
       <button disabled={busy} type="submit" className="bg-blue-600 text-white px-4 py-2 rounded">
