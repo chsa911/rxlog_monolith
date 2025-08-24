@@ -69,7 +69,7 @@ export default function SearchUpdatePage() {
       {/* Filters */}
       <div className="p-4 border rounded grid gap-3 md:grid-cols-4">
         <label className="flex flex-col gap-1">
-          <span>Freitext (BMark, Autor, Verlag …)</span>
+          <span>Freitext (BMark, Autor, Keyword, Verlag …)</span>
           <input
             className="border rounded p-2"
             placeholder="z.B. egk001 oder Autor"
@@ -106,11 +106,10 @@ export default function SearchUpdatePage() {
             <tr>
               <th className="p-2 text-left">BMark</th>
               <th className="p-2 text-left">Autor</th>
+              <th className="p-2 text-left">Keyword</th>
               <th className="p-2 text-left">Verlag</th>
-              <th className="p-2 text-left">H/V</th>
-              <th className="p-2 text-left">H/V gesetzt</th>
-              <th className="p-2 text-left">Top</th>
-              <th className="p-2 text-left">Top gesetzt</th>
+              <th className="p-2 text-left">Ergebnis</th>
+              <th className="p-2 text-left">Toptitel</th>
               <th className="p-2 text-left">Erfasst</th>
             </tr>
           </thead>
@@ -122,6 +121,7 @@ export default function SearchUpdatePage() {
               <tr key={b._id} className="border-t">
                 <td className="p-2 font-mono">{b.BMarkb || "—"}</td>
                 <td className="p-2">{b.BAutor}</td>
+                <td className="p-2">{b.BKw}</td>
                 <td className="p-2">{b.BVerlag}</td>
 
                 {/* Single radio group: H or V */}
