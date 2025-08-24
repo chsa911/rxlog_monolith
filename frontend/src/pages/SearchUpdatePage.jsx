@@ -135,7 +135,7 @@ export default function SearchUpdatePage() {
                         checked={b.BHVorV === "H"}
                         onChange={() => setHV(b._id, "H")}
                       />
-                      H (Historisiert)
+                      H
                     </label>
                     <label className="inline-flex items-center gap-1">
                       <input
@@ -145,7 +145,7 @@ export default function SearchUpdatePage() {
                         checked={b.BHVorV === "V"}
                         onChange={() => setHV(b._id, "V")}
                       />
-                      V (Vorzeitig)
+                      V
                     </label>
                   </div>
                 </td>
@@ -161,7 +161,7 @@ export default function SearchUpdatePage() {
                       checked={!!b.BTop}
                       onChange={() => toggleTop(b._id, b.BTop)}
                     />
-                    Top-Titel
+
                   </label>
                 </td>
                 <td className="p-2">
