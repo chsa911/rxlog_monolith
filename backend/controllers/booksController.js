@@ -2,12 +2,9 @@
 const Book = require('../models/Book');
 const BMarkf = require('../models/BMarkf');
 const { getStatus, computeRank } = require('../utils/status');
-
-// IMPORTANT: destructure the function from the util module
 const { sizeToPrefixFromDb } = require('../utils/sizeToPrefixFromDb');
 
 /* ------------------------- helpers ------------------------- */
-
 function toNum(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -15,58 +12,20 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
-exports.updateBook = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const body = { ...req.body };
 
-    // Coerce numbers if provided
-    if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
-    if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
-
-    // Timestamps for Top
-    if (typeof body.BTop === 'boolean') {
-      body.BTopAt = body.BTop ? new Date() : null;
-    }
-
-    // Timestamp for H/V — only if provided
-    if (body.BHVorV === 'H' || body.BHVorV === 'V') {
-      body.BHVorVAt = new Date();
-    }
-
-    const updated = await Book.findByIdAndUpdate(id, body, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!updated) return res.status(404).json({ error: 'Book not found' });
-    res.json({ ...updated.toObject(), status: getStatus(updated) });
-  } catch (err) {
-    console.error('updateBook error:', err);
-    res.status(400).json({ error: err.message || 'Bad request' });
-  }
-};
-
-/* ------------------------- list books ------------------------- */
-/**
- * GET /api/books
- * Query:
- *   q            - text search across BTitel, BAutor, BVerlag, BKw
- *   page         - page number (1-based)
- *   limit        - items per page (default 20)
- *   sort         - field to sort by (default: createdAt)
- *   order        - asc|desc (default: desc)
- *   historisiert - true|false (optional filter)
- */
+/* ------------------------- LIST ------------------------- */
+// GET /api/books
+// Query: q, page, limit, sort, order, createdFrom, createdTo
 exports.listBooks = async (req, res) => {
   try {
     const {
       q,
       page = 1,
       limit = 20,
-      sort = 'createdAt',
+      sort = 'BEind',
       order = 'desc',
-      historisiert,
+      createdFrom,
+      createdTo,
     } = req.query;
 
     const pg = Math.max(1, parseInt(page, 10) || 1);
@@ -75,6 +34,7 @@ exports.listBooks = async (req, res) => {
     const direction = order === 'asc' ? 1 : -1;
 
     const filter = {};
+
     if (q) {
       const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [
@@ -85,8 +45,12 @@ exports.listBooks = async (req, res) => {
         { BMarkb: rx },
       ];
     }
-    if (typeof historisiert !== 'undefined') {
-      filter.historisiert = String(historisiert).toLowerCase() === 'true';
+
+    // optional BEind date range
+    if (createdFrom || createdTo) {
+      filter.BEind = {};
+      if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
+      if (createdTo)   filter.BEind.$lt  = new Date(createdTo   + 'T23:59:59.999Z');
     }
 
     const [items, total] = await Promise.all([
@@ -95,134 +59,90 @@ exports.listBooks = async (req, res) => {
     ]);
 
     const data = items.map((b) => ({ ...b, status: getStatus(b) }));
-    res.json({
-      data,
-      page: pg,
-      limit: lim,
-      total,
-      pages: Math.ceil(total / lim),
-    });
+    res.json({ data, page: pg, limit: lim, total, pages: Math.ceil(total / lim) });
   } catch (err) {
     console.error('listBooks error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 };
 
-/* ------------------------- register book ------------------------- */
-/**
- * POST /api/books/register
- * Body: { BBreite, BHoehe, ...fields }
- * - BBreite, BHoehe are in CM (strings with comma or dot ok)
- * Flow:
- *  1) map (w,h) -> prefix via SizeRule (equals-first)
- *  2) consume next free mark from BMarkf by ^prefix (sort BMark:1, rank:1)
- *  3) if none and prefix ends with 'i', try prefix+'k' (fallback i→ik)
- *  4) create Book with BMarkb
- */
+/* ------------------------- REGISTER ------------------------- */
+// POST /api/books/register
+// Body: { BBreite, BHoehe, ...fields }
 exports.registerBook = async (req, res) => {
   try {
-    console.log('[registerBook] raw body:', req.body);
-
-    // Accept "12,5" or "12.5"
-    const toNum = v => {
-      if (v == null) return null;
-      const n = Number(String(v).trim().replace(',', '.'));
-      return Number.isFinite(n) ? n : null;
-    };
+    // log minimal
+    // console.log('[registerBook] body:', req.body);
 
     const { BBreite, BHoehe, ...fields } = req.body;
     const w = toNum(BBreite);
     const h = toNum(BHoehe);
-    console.log('[registerBook] parsed w,h =', w, h);
 
     if (w === null || h === null) {
-      console.error('[registerBook] invalid width/height', { BBreite, BHoehe });
       return res.status(400).json({ error: 'BBreite and BHoehe (cm) are required' });
     }
 
-    // map (w,h) -> prefix
-    let prefix;
-    try {
-      prefix = await sizeToPrefixFromDb(w, h);
-      console.log('[registerBook] sizeToPrefixFromDb ->', prefix);
-    } catch (e) {
-      console.error('[registerBook] sizeToPrefixFromDb failed:', e);
-      return res.status(500).json({ error: 'sizeToPrefixFromDb failed: ' + (e.message || e) });
-    }
-    if (!prefix) {
-      return res.status(400).json({ error: 'No matching size rule' });
-    }
+    // map (w,h) -> size prefix from DB rules
+    let prefix = await sizeToPrefixFromDb(w, h);
+    if (!prefix) return res.status(400).json({ error: 'No matching size rule' });
 
-    // consume a free BMark
+    // pick a free BMark: exact prefix, fallback i->ik
     let picked = await BMarkf.findOneAndDelete(
       { BMark: new RegExp(`^${prefix}`, 'i') },
       { sort: { BMark: 1, rank: 1 } }
     ).lean();
-    console.log('[registerBook] picked (exact):', picked?.BMark);
 
-    // fallback i -> ik
     if (!picked && /i$/i.test(prefix)) {
       const alt = `${prefix}k`;
       picked = await BMarkf.findOneAndDelete(
         { BMark: new RegExp(`^${alt}`, 'i') },
         { sort: { BMark: 1, rank: 1 } }
       ).lean();
-      console.log('[registerBook] picked (fallback i->ik):', picked?.BMark);
     }
 
     if (!picked) {
-      console.error('[registerBook] no free mark for prefix', prefix);
       return res.status(409).json({ error: `No free BMark for prefix ${prefix}` });
     }
-// --- normalize status fields coming from the form ---
 
-// BHVorV: "H" or "V"; ignore empty strings
-if (typeof fields.BHVorV === 'string') {
-  const val = fields.BHVorV.trim().toUpperCase();
-  if (val === '') {
-    delete fields.BHVorV;           // do not send empty string to schema
-  } else if (val === 'H' || val === 'V') {
-    fields.BHVorV = val;
-    fields.BHVorVAt = new Date();   // set timestamp when user chose H/V
-  } else {
-    return res.status(400).json({ error: 'BHVorV must be H or V' });
-  }
-}
+    // Normalize & stamp control fields coming from form
+    if (typeof fields.BHVorV === 'string') {
+      const val = fields.BHVorV.trim().toUpperCase();
+      if (val === 'H' || val === 'V') {
+        fields.BHVorV = val;
+        fields.BHVorVAt = new Date();
+        // optional legacy sync
+        fields.BHistorisiert   = val === 'H';
+        fields.BHistorisiertAt = val === 'H' ? new Date() : null;
+        fields.BVorzeitig      = val === 'V';
+        fields.BVorzeitigAt    = val === 'V' ? new Date() : null;
+      } else if (val === '') {
+        delete fields.BHVorV;
+      } else {
+        return res.status(400).json({ error: 'BHVorV must be H or V' });
+      }
+    }
 
-// BTop: boolean with timestamp when true
-if (typeof fields.BTop !== 'undefined') {
-  fields.BTop = !!fields.BTop;
-  fields.BTopAt = fields.BTop ? new Date() : null;
-}
+    if (typeof fields.BTop !== 'undefined') {
+      fields.BTop = !!fields.BTop;
+      fields.BTopAt = fields.BTop ? new Date() : null;
+    }
 
-    // create the book
     const doc = await Book.create({
       BBreite: w,
       BHoehe: h,
       ...fields,
       BMarkb: picked.BMark,
     });
-    console.log('[registerBook] created book _id:', doc._id);
 
-    // guard getStatus
-    let status = null;
-    try {
-      status = typeof getStatus === 'function' ? getStatus(doc) : null;
-    } catch (e) {
-      console.warn('[registerBook] getStatus failed:', e);
-    }
-
-    res.json({ ...doc.toObject(), status });
+    res.json({ ...doc.toObject(), status: getStatus(doc) });
   } catch (err) {
     console.error('registerBook error:', err);
     res.status(500).json({ error: err.message || 'Server error' });
   }
 };
 
-/* ------------------------- get one ------------------------- */
-/**
- * GET /api/books/:id
- */
+/* ------------------------- GET ONE ------------------------- */
+// GET /api/books/:id
 exports.getBook = async (req, res) => {
   try {
     const { id } = req.params;
@@ -235,19 +155,28 @@ exports.getBook = async (req, res) => {
   }
 };
 
-/* ------------------------- patch/update ------------------------- */
-/**
- * PATCH /api/books/:id
- * - Partial update. Coerces BBreite/BHoehe to numbers if present.
- * - Optionally recomputes rank via computeRank() if available.
- */
+/* ------------------------- UPDATE (PATCH) ------------------------- */
+// PATCH /api/books/:id
 exports.updateBook = async (req, res) => {
   try {
     const { id } = req.params;
-
     const body = { ...req.body };
+
     if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
-    if (body.BHoehe != null) body.BHoehe = toNum(body.BHoehe);
+    if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
+
+    if (typeof body.BTop === 'boolean') {
+      body.BTopAt = body.BTop ? new Date() : null;
+    }
+
+    if (body.BHVorV === 'H' || body.BHVorV === 'V') {
+      body.BHVorVAt = new Date();
+      // optional legacy sync
+      body.BHistorisiert   = body.BHVorV === 'H';
+      body.BHistorisiertAt = body.BHVorV === 'H' ? new Date() : null;
+      body.BVorzeitig      = body.BHVorV === 'V';
+      body.BVorzeitigAt    = body.BHVorV === 'V' ? new Date() : null;
+    }
 
     const updated = await Book.findByIdAndUpdate(id, body, {
       new: true,
@@ -264,9 +193,7 @@ exports.updateBook = async (req, res) => {
           await updated.save();
         }
       }
-    } catch (e) {
-      // non-fatal
-    }
+    } catch (_) { /* non-fatal */ }
 
     res.json({ ...updated.toObject(), status: getStatus(updated) });
   } catch (err) {
@@ -275,25 +202,18 @@ exports.updateBook = async (req, res) => {
   }
 };
 
-/* ------------------------- delete ------------------------- */
-/**
- * DELETE /api/books/:id
- * - Deletes book
- * - Returns BMarkb to free pool (upsert with default rank)
- */
+/* ------------------------- DELETE ------------------------- */
+// DELETE /api/books/:id
 exports.deleteBook = async (req, res) => {
   try {
     const { id } = req.params;
-
     const book = await Book.findById(id);
     if (!book) return res.status(404).json({ error: 'Book not found' });
 
     const mark = book.BMarkb;
-
     await Book.findByIdAndDelete(id);
 
     if (mark) {
-      // return mark to pool; set a conservative default rank high value if new
       await BMarkf.updateOne(
         { BMark: mark },
         { $setOnInsert: { BMark: mark, rank: 9999 } },
@@ -308,14 +228,11 @@ exports.deleteBook = async (req, res) => {
   }
 };
 
-/* ------------------------- optional: autocomplete ------------------------- */
-/**
- * GET /api/books/autocomplete?field=BAutor&q=king
- * Supports: BAutor, BKw, BVerlag (extend as needed)
- */
+/* ------------------------- AUTOCOMPLETE ------------------------- */
+// GET /api/books/autocomplete/:field?q=...
 exports.autocomplete = async (req, res) => {
   try {
-    const field = req.params.field || req.query.field;   // <—
+    const field = req.params.field || req.query.field;
     const { q } = req.query;
 
     const ALLOWED = new Set(['BAutor', 'BKw', 'BVerlag']);

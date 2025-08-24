@@ -10,6 +10,7 @@
 
     const PORT = Number(process.env.PORT || 4000);
     const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bmarkdb';
+
 app.use(express.json());     // <- must be before app.use('/api', ...)
 
 app.use('/api/bmarks', require('./routes/bmarks'));

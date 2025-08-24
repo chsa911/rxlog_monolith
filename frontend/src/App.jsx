@@ -1,30 +1,43 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
-import HomePage from "./pages/HomePage";
-import RegisterPage from "./pages/RegisterPage";
-import BooksPage from "./pages/BooksPage";
-import SearchUpdatePage from "./pages/SearchUpdatePage"; // ⬅️ add this
+import RegistrationForm from "./pages/RegisterPage"; // your component as given
+import SearchUpdatePage from "./pages/SearchUpdatePage";  // the page we built
 
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-white text-gray-900">
-        {/* If you have a Header component already, skip this block and edit Header.jsx below */}
-        <header className="border-b">
-          <nav className="max-w-5xl mx-auto px-4 py-3 flex gap-4">
-            <NavLink to="/" className={({isActive}) => isActive ? "font-semibold" : ""}>Home</NavLink>
-            <NavLink to="/register" className={({isActive}) => isActive ? "font-semibold" : ""}>Register</NavLink>
-            <NavLink to="/books" className={({isActive}) => isActive ? "font-semibold" : ""}>Books</NavLink>
-            <NavLink to="/search-update" className={({isActive}) => isActive ? "font-semibold" : ""}>Search & Update</NavLink> {/* ⬅️ new */}
-          </nav>
+      <div className="min-h-screen flex flex-col">
+        {/* Top bar */}
+        <header className="border-b bg-white/70 backdrop-blur sticky top-0 z-10">
+          <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+            <div className="font-semibold">rxapp</div>
+            <nav className="flex items-center gap-4 text-sm">
+              <NavLink
+                to="/register"
+                className={({ isActive }) =>
+                  `px-3 py-1.5 rounded ${isActive ? "bg-blue-600 text-white" : "hover:bg-gray-100"}`
+                }
+              >
+                Registrieren
+              </NavLink>
+              <NavLink
+                to="/update"
+                className={({ isActive }) =>
+                  `px-3 py-1.5 rounded ${isActive ? "bg-blue-600 text-white" : "hover:bg-gray-100"}`
+                }
+              >
+                Suche / Update
+              </NavLink>
+            </nav>
+          </div>
         </header>
 
-        <main className="max-w-5xl mx-auto px-4 py-6">
+        {/* Content */}
+        <main className="max-w-6xl mx-auto w-full p-4 flex-1">
           <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/register" element={<RegisterPage />} />
-            <Route path="/books" element={<BooksPage />} />
-            <Route path="/search-update" element={<SearchUpdatePage />} /> {/* ⬅️ new */}
-            <Route path="*" element={<div>404</div>} />
+            <Route path="/" element={<Navigate to="/register" replace />} />
+            <Route path="/register" element={<RegistrationForm />} />
+            <Route path="/update" element={<SearchUpdatePage />} />
+            <Route path="*" element={<div className="p-6">Seite nicht gefunden</div>} />
           </Routes>
         </main>
       </div>

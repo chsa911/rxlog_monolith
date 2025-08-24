@@ -1,15 +1,14 @@
-const express = require("express");
+
+// backend/routes/books.js
+const express = require('express');
 const router = express.Router();
-const booksController = require("../controllers/booksController");
+const books = require('../controllers/booksController');
 
-// specific routes FIRST
-router.get("/autocomplete", booksController.autocomplete);          // <-- place before /:id
-router.post("/register", booksController.registerBook);
-router.get("/", booksController.listBooks);
-
-// routes with :id AFTER all specific ones
-router.patch("/:id", booksController.updateBook);
-router.get("/:id", booksController.getBook);
-router.delete("/:id", booksController.deleteBook);
+router.get('/', books.listBooks);
+router.post('/register', books.registerBook);
+router.get('/autocomplete/:field', books.autocomplete);
+router.get('/:id', books.getBook);
+router.patch('/:id', books.updateBook);
+router.delete('/:id', books.deleteBook);
 
 module.exports = router;
