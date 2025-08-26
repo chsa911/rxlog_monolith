@@ -139,7 +139,7 @@ export default function RegistrationForm({ onRegistered }) {
 
         <label className="flex flex-col gap-1">
           <span>Position Stichwort (BKP)</span>
-          <input type="number" required max={2} value={form.BKP} onChange={setField("BKP")} className="border p-2 rounded" />
+          <input type="number" required max={99} value={form.BKP} onChange={setField("BKP")} className="border p-2 rounded" />
         </label>
 
         <label className="flex flex-col gap-1">
@@ -162,7 +162,7 @@ export default function RegistrationForm({ onRegistered }) {
 
         <label className="flex flex-col gap-1">
           <span>Position 2. Stichwort (BK1P)</span>
-          <input type="number" max={2} value={form.BK1P} onChange={setField("BK1P")} className="border p-2 rounded" placeholder="optional" />
+          <input type="number" max={99} value={form.BK1P} onChange={setField("BK1P")} className="border p-2 rounded" placeholder="optional" />
         </label>
 
         <label className="flex flex-col gap-1">
@@ -173,7 +173,7 @@ export default function RegistrationForm({ onRegistered }) {
 
         <label className="flex flex-col gap-1">
           <span>Position 3. Stichwort (BK2P)</span>
-          <input type="number" max={2} value={form.BK2P} onChange={setField("BK2P")} className="border p-2 rounded" placeholder="optional" />
+          <input type="number" max={99} value={form.BK2P} onChange={setField("BK2P")} className="border p-2 rounded" placeholder="optional" />
         </label>
 
         <label className="flex items-center gap-2 mt-1 md:col-span-2">

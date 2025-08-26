@@ -6,11 +6,11 @@ const bookSchema = new Schema({
   BHoehe:  { type: Number, required: true },   // height
   BAutor:  { type: String,  required: true },
   BKw:     { type: String,  required: true, maxlength: 25 },
-  BKP:     { type: Number,  required: true, max: 2 },
+  BKP:     { type: Number,  required: true, max: 99 },
   BKw1:    { type: String,  maxlength: 25 },
-  BK1P:    { type: Number,  max: 2 },
+  BK1P:    { type: Number,  max: 99 },
   BKw2:    { type: String,  maxlength: 25 },
-  BK2P:    { type: Number,  max: 2 },
+  BK2P:    { type: Number,  max: 99 },
   BVerlag: { type: String,  required: true, maxlength: 25 },
   BSeiten: { type: Number,  required: true, max: 9999 },
   BEind:   { type: Date,    default: Date.now },     // registration date
