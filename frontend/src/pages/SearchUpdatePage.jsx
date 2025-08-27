@@ -11,15 +11,10 @@ export default function SearchUpdatePage() {
   const [from, setFrom] = useState(todayISO());
   const [to, setTo] = useState(todayISO());
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState({
-    data: [],
-    page: 1,
-    pages: 1,
-    total: 0,
-    limit: 20,
-  });
+  const [result, setResult] = useState({ data: [], page: 1, pages: 1, total: 0, limit: 20 });
   const [page, setPage] = useState(1);
-  const [pending, setPending] = useState({}); // track in-flight updates
+  const [pending, setPending] = useState({});
+  const [edits, setEdits] = useState({}); // local row edits
 
   const params = useMemo(() => {
     const p = { page, limit: 20, sort: "BEind", order: "desc" };
@@ -48,17 +43,28 @@ export default function SearchUpdatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // helper: update field inline
-  async function saveField(id, field, value) {
+  function handleChange(id, field, value) {
+    setEdits((prev) => ({
+      ...prev,
+      [id]: { ...prev[id], [field]: value },
+    }));
+  }
+
+  async function saveRow(id) {
+    const body = edits[id];
+    if (!body) return;
     try {
       setPending((p) => ({ ...p, [id]: true }));
-      const updated = await updateBook(id, { [field]: value });
+      const updated = await updateBook(id, body);
       setResult((prev) => ({
         ...prev,
-        data: prev.data.map((b) =>
-          b._id === id ? { ...b, ...updated } : b
-        ),
+        data: prev.data.map((b) => (b._id === id ? { ...b, ...updated } : b)),
       }));
+      setEdits((prev) => {
+        const n = { ...prev };
+        delete n[id];
+        return n;
+      });
     } catch (e) {
       console.error(e);
       alert("Update fehlgeschlagen");
@@ -71,16 +77,32 @@ export default function SearchUpdatePage() {
     }
   }
 
-  // Defensive: derive H/V + timestamp
+  // 🚀 NEW: Save all edited rows
+  async function saveAll() {
+    const ids = Object.keys(edits);
+    for (const id of ids) {
+      await saveRow(id);
+    }
+  }
+
   function deriveHV(b) {
-    if (b.BHVorV === "H" || b.BHVorV === "V")
-      return { hv: b.BHVorV, at: b.BHVorVAt };
+    if (b.BHVorV === "H" || b.BHVorV === "V") return { hv: b.BHVorV, at: b.BHVorVAt };
     return { hv: null, at: null };
   }
 
   return (
     <div className="space-y-4 p-4">
-      <h1 className="text-2xl font-bold">Suche &amp; Update (alle Felder)</h1>
+      <h1 className="text-2xl font-bold flex justify-between items-center">
+        Suche &amp; Update (H/V &amp; Top)
+        {Object.keys(edits).length > 0 && (
+          <button
+            onClick={saveAll}
+            className="bg-green-600 text-white px-4 py-2 rounded text-sm"
+          >
+            Alle Änderungen speichern ({Object.keys(edits).length})
+          </button>
+        )}
+      </h1>
 
       {/* Filters */}
       <div className="p-4 border rounded grid gap-3 md:grid-cols-4">
@@ -95,36 +117,18 @@ export default function SearchUpdatePage() {
         </label>
         <label className="flex flex-col gap-1">
           <span>Von</span>
-          <input
-            type="date"
-            className="border rounded p-2"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
+          <input type="date" className="border rounded p-2" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label className="flex flex-col gap-1">
           <span>Bis</span>
-          <input
-            type="date"
-            className="border rounded p-2"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
+          <input type="date" className="border rounded p-2" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
         <div className="flex items-end gap-2">
-          <button
-            onClick={() => fetchData(1)}
-            className="bg-blue-600 text-white px-4 py-2 rounded"
-            disabled={loading}
-          >
+          <button onClick={() => fetchData(1)} className="bg-blue-600 text-white px-4 py-2 rounded" disabled={loading}>
             {loading ? "Laden…" : "Suchen"}
           </button>
           <button
-            onClick={() => {
-              setQuery("");
-              setFrom(todayISO());
-              setTo(todayISO());
-            }}
+            onClick={() => { setQuery(""); setFrom(todayISO()); setTo(todayISO()); }}
             className="px-4 py-2 rounded border"
             disabled={loading}
           >
@@ -133,223 +137,133 @@ export default function SearchUpdatePage() {
         </div>
       </div>
 
-      {/* Results */}
+      {/* Results Table */}
       <div className="overflow-x-auto border rounded">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              <th className="p-2 text-left">BMark</th>
-              <th className="p-2 text-left">Autor</th>
-              <th className="p-2 text-left">Keyword</th>
-              <th className="p-2 text-left">KWP</th>
-              <th className="p-2 text-left">Verlag</th>
-              <th className="p-2 text-left">Seiten</th>
-              <th className="p-2 text-left">H/V</th>
-              <th className="p-2 text-left">Top</th>
-              <th className="p-2 text-left">Erfasst</th>
+              <th className="p-2">BMark</th>
+              <th className="p-2">Autor</th>
+              <th className="p-2">Keyword</th>
+              <th className="p-2">KWP</th>
+              <th className="p-2">Verlag</th>
+              <th className="p-2">Seiten</th>
+              <th className="p-2">H/V</th>
+              <th className="p-2">Top</th>
+              <th className="p-2">Erfasst</th>
+              <th className="p-2">Aktionen</th>
             </tr>
           </thead>
           <tbody>
-            {result.data.length === 0 && !loading && (
-              <tr>
-                <td className="p-4" colSpan={9}>
-                  Keine Treffer
-                </td>
-              </tr>
-            )}
             {result.data.map((b) => {
+              const edit = edits[b._id] || {};
               const { hv, at } = deriveHV(b);
+
               return (
                 <tr key={b._id} className="border-t">
                   <td className="p-2 font-mono">{b.BMarkb || "—"}</td>
-
-                  {/* Autor editable */}
                   <td className="p-2">
                     <input
                       className="border rounded px-2 py-1 w-32"
-                      value={b.BAutor || ""}
-                      disabled={!!pending[b._id]}
-                      onChange={(e) =>
-                        setResult((prev) => ({
-                          ...prev,
-                          data: prev.data.map((x) =>
-                            x._id === b._id
-                              ? { ...x, BAutor: e.target.value }
-                              : x
-                          ),
-                        }))
-                      }
-                      onBlur={(e) => saveField(b._id, "BAutor", e.target.value)}
+                      value={edit.BAutor ?? b.BAutor ?? ""}
+                      onChange={(e) => handleChange(b._id, "BAutor", e.target.value)}
                     />
                   </td>
-
-                  {/* Keyword editable */}
                   <td className="p-2">
                     <input
                       className="border rounded px-2 py-1 w-28"
-                      value={b.BKw || ""}
-                      onChange={(e) =>
-                        setResult((prev) => ({
-                          ...prev,
-                          data: prev.data.map((x) =>
-                            x._id === b._id
-                              ? { ...x, BKw: e.target.value }
-                              : x
-                          ),
-                        }))
-                      }
-                      onBlur={(e) => saveField(b._id, "BKw", e.target.value)}
+                      value={edit.BKw ?? b.BKw ?? ""}
+                      onChange={(e) => handleChange(b._id, "BKw", e.target.value)}
                     />
                   </td>
-
-                  {/* KP editable */}
                   <td className="p-2">
                     <input
                       type="number"
                       className="border rounded px-2 py-1 w-16"
-                      value={b.BKP || ""}
-                      onChange={(e) =>
-                        setResult((prev) => ({
-                          ...prev,
-                          data: prev.data.map((x) =>
-                            x._id === b._id
-                              ? { ...x, BKP: e.target.value }
-                              : x
-                          ),
-                        }))
-                      }
-                      onBlur={(e) =>
-                        saveField(b._id, "BKP", Number(e.target.value))
-                      }
+                      value={edit.BKP ?? b.BKP ?? ""}
+                      onChange={(e) => handleChange(b._id, "BKP", Number(e.target.value))}
                     />
                   </td>
-
-                  {/* Verlag editable */}
                   <td className="p-2">
                     <input
                       className="border rounded px-2 py-1 w-32"
-                      value={b.BVerlag || ""}
-                      onChange={(e) =>
-                        setResult((prev) => ({
-                          ...prev,
-                          data: prev.data.map((x) =>
-                            x._id === b._id
-                              ? { ...x, BVerlag: e.target.value }
-                              : x
-                          ),
-                        }))
-                      }
-                      onBlur={(e) => saveField(b._id, "BVerlag", e.target.value)}
+                      value={edit.BVerlag ?? b.BVerlag ?? ""}
+                      onChange={(e) => handleChange(b._id, "BVerlag", e.target.value)}
                     />
                   </td>
-
-                  {/* Seiten editable */}
                   <td className="p-2">
                     <input
                       type="number"
                       className="border rounded px-2 py-1 w-20"
-                      value={b.BSeiten || ""}
-                      onChange={(e) =>
-                        setResult((prev) => ({
-                          ...prev,
-                          data: prev.data.map((x) =>
-                            x._id === b._id
-                              ? { ...x, BSeiten: e.target.value }
-                              : x
-                          ),
-                        }))
-                      }
-                      onBlur={(e) =>
-                        saveField(b._id, "BSeiten", Number(e.target.value))
-                      }
+                      value={edit.BSeiten ?? b.BSeiten ?? ""}
+                      onChange={(e) => handleChange(b._id, "BSeiten", Number(e.target.value))}
                     />
                   </td>
 
-                  {/* H/V with timestamp */}
+                  {/* H/V */}
                   <td className="p-2">
-                    <div className="flex gap-4 items-center">
-                      <label className="inline-flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name={`hv-${b._id}`}
-                          value="H"
-                          checked={hv === "H"}
-                          onChange={() => saveField(b._id, "BHVorV", "H")}
-                        />
-                        H
-                      </label>
-                      <label className="inline-flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name={`hv-${b._id}`}
-                          value="V"
-                          checked={hv === "V"}
-                          onChange={() => saveField(b._id, "BHVorV", "V")}
-                        />
-                        V
-                      </label>
-                      <span className="text-xs text-gray-500">
-                        {at ? new Date(at).toLocaleString() : "—"}
-                      </span>
-                    </div>
+                    <label>
+                      <input
+                        type="radio"
+                        name={`hv-${b._id}`}
+                        value="H"
+                        checked={(edit.BHVorV ?? hv) === "H"}
+                        onChange={() => handleChange(b._id, "BHVorV", "H")}
+                      />{" "}
+                      H
+                    </label>
+                    <label className="ml-2">
+                      <input
+                        type="radio"
+                        name={`hv-${b._id}`}
+                        value="V"
+                        checked={(edit.BHVorV ?? hv) === "V"}
+                        onChange={() => handleChange(b._id, "BHVorV", "V")}
+                      />{" "}
+                      V
+                    </label>
+                    <div className="text-xs text-gray-500">{at ? new Date(at).toLocaleString() : "—"}</div>
                   </td>
 
-                  {/* Top flag */}
+                  {/* Top */}
                   <td className="p-2">
                     {b.BTop ? (
                       <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 border rounded text-xs">
-                          Top
-                        </span>
+                        <span className="px-2 py-0.5 border rounded text-xs">Top</span>
                         <span className="text-xs text-gray-500">
-                          {b.BTopAt
-                            ? new Date(b.BTopAt).toLocaleString()
-                            : "—"}
+                          {b.BTopAt ? new Date(b.BTopAt).toLocaleString() : "—"}
                         </span>
                       </div>
                     ) : (
                       <button
                         className="px-2 py-1 border rounded text-xs"
-                        onClick={() => saveField(b._id, "BTop", true)}
-                        disabled={loading || !!pending[b._id]}
+                        onClick={() => handleChange(b._id, "BTop", true)}
                       >
                         Als Top markieren
                       </button>
                     )}
                   </td>
 
+                  <td className="p-2">{b.BEind ? new Date(b.BEind).toLocaleString() : "—"}</td>
+
                   <td className="p-2">
-                    {b.BEind ? new Date(b.BEind).toLocaleString() : "—"}
+                    {edits[b._id] ? (
+                      <button
+                        className="bg-green-600 text-white px-2 py-1 rounded text-xs"
+                        disabled={!!pending[b._id]}
+                        onClick={() => saveRow(b._id)}
+                      >
+                        {pending[b._id] ? "Speichern…" : "Speichern"}
+                      </button>
+                    ) : (
+                      <span className="text-gray-400 text-xs">—</span>
+                    )}
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="flex items-center gap-3">
-        <button
-          className="px-3 py-1 border rounded"
-          disabled={loading || result.page <= 1}
-          onClick={() => fetchData(result.page - 1)}
-        >
-          ◀︎ Zurück
-        </button>
-        <div>
-          Seite {result.page} / {Math.max(1, result.pages)}
-        </div>
-        <button
-          className="px-3 py-1 border rounded"
-          disabled={loading || result.page >= result.pages}
-          onClick={() => fetchData(result.page + 1)}
-        >
-          Weiter ▶︎
-        </button>
-        <div className="ml-auto text-sm text-gray-500">
-          {result.total} Treffer
-        </div>
       </div>
     </div>
   );
