@@ -4,6 +4,9 @@ const BMarkf = require('../models/BMarkf');
 const { getStatus, computeRank } = require('../utils/status');
 const { sizeToPrefixFromDb } = require('../utils/sizeToPrefixFromDb');
 
+const MS_7_DAYS = 7 * 24 * 60 * 60 * 1000;
+const sevenDaysFromNow = () => new Date(Date.now() + MS_7_DAYS);
+
 /* ------------------------- helpers ------------------------- */
 function toNum(v) {
   if (v === null || v === undefined) return null;
@@ -46,7 +49,6 @@ exports.listBooks = async (req, res) => {
       ];
     }
 
-    // optional BEind date range
     if (createdFrom || createdTo) {
       filter.BEind = {};
       if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
@@ -71,9 +73,6 @@ exports.listBooks = async (req, res) => {
 // Body: { BBreite, BHoehe, ...fields }
 exports.registerBook = async (req, res) => {
   try {
-    // log minimal
-    // console.log('[registerBook] body:', req.body);
-
     const { BBreite, BHoehe, ...fields } = req.body;
     const w = toNum(BBreite);
     const h = toNum(BHoehe);
@@ -110,11 +109,7 @@ exports.registerBook = async (req, res) => {
       if (val === 'H' || val === 'V') {
         fields.BHVorV = val;
         fields.BHVorVAt = new Date();
-        // optional legacy sync
-        fields.BHistorisiert   = val === 'H';
-        fields.BHistorisiertAt = val === 'H' ? new Date() : null;
-        fields.BVorzeitig      = val === 'V';
-        fields.BVorzeitigAt    = val === 'V' ? new Date() : null;
+        fields.BMarkReleaseDue = sevenDaysFromNow();
       } else if (val === '') {
         delete fields.BHVorV;
       } else {
@@ -124,6 +119,7 @@ exports.registerBook = async (req, res) => {
 
     if (typeof fields.BTop !== 'undefined') {
       fields.BTop = !!fields.BTop;
+      // If Top is true at registration, stamp once
       fields.BTopAt = fields.BTop ? new Date() : null;
     }
 
@@ -165,17 +161,20 @@ exports.updateBook = async (req, res) => {
     if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
     if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
 
+    // Top: if true and no timestamp yet, stamp now; if false, do NOT clear BTopAt
     if (typeof body.BTop === 'boolean') {
-      body.BTopAt = body.BTop ? new Date() : null;
+      if (body.BTop === true) {
+        body.BTopAt = new Date();
+      } else {
+        // keep existing BTopAt; remove any accidental clear attempts
+        delete body.BTopAt;
+      }
     }
 
+    // H/V: set flag & timestamp; schedule (or reschedule) release in 7 days
     if (body.BHVorV === 'H' || body.BHVorV === 'V') {
       body.BHVorVAt = new Date();
-      // optional legacy sync
-      body.BHistorisiert   = body.BHVorV === 'H';
-      body.BHistorisiertAt = body.BHVorV === 'H' ? new Date() : null;
-      body.BVorzeitig      = body.BHVorV === 'V';
-      body.BVorzeitigAt    = body.BHVorV === 'V' ? new Date() : null;
+      body.BMarkReleaseDue = sevenDaysFromNow();
     }
 
     const updated = await Book.findByIdAndUpdate(id, body, {
@@ -185,6 +184,7 @@ exports.updateBook = async (req, res) => {
 
     if (!updated) return res.status(404).json({ error: 'Book not found' });
 
+    // Optional: recompute rank if you have a policy
     try {
       if (typeof computeRank === 'function') {
         const newRank = computeRank(updated);
@@ -214,6 +214,7 @@ exports.deleteBook = async (req, res) => {
     await Book.findByIdAndDelete(id);
 
     if (mark) {
+      // return mark to pool (idempotent)
       await BMarkf.updateOne(
         { BMark: mark },
         { $setOnInsert: { BMark: mark, rank: 9999 } },
@@ -253,4 +254,3 @@ exports.autocomplete = async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 };
-

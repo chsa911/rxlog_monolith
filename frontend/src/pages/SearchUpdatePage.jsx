@@ -1,26 +1,25 @@
+// frontend/pages/SearchUpdatePage.jsx
 import { useEffect, useMemo, useState } from "react";
 import { listBooks, updateBook } from "../api/books";
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
-function daysAgoISO(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 export default function SearchUpdatePage() {
   const [query, setQuery] = useState("");
-
-  // ⬇️ Standard: letzte 7 Tage inkl. heute
-  const [from, setFrom] = useState(daysAgoISO(6));
+  const [from, setFrom] = useState(todayISO());
   const [to, setTo] = useState(todayISO());
-
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState({ data: [], page: 1, pages: 1, total: 0, limit: 20 });
+  const [result, setResult] = useState({
+    data: [],
+    page: 1,
+    pages: 1,
+    total: 0,
+    limit: 20,
+  });
   const [page, setPage] = useState(1);
-  const [pending, setPending] = useState({}); // in-flight updates pro Zeile
+  const [pending, setPending] = useState({}); // track in-flight updates
 
   const params = useMemo(() => {
     const p = { page, limit: 20, sort: "BEind", order: "desc" };
@@ -49,15 +48,16 @@ export default function SearchUpdatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- Actions ---
-  // Optimistisch: API-Response direkt in Tabelle übernehmen, damit Timestamps sofort sichtbar sind
-  async function setHV(id, value /* 'H' | 'V' */) {
+  // helper: update field inline
+  async function saveField(id, field, value) {
     try {
       setPending((p) => ({ ...p, [id]: true }));
-      const updated = await updateBook(id, { BHVorV: value });
+      const updated = await updateBook(id, { [field]: value });
       setResult((prev) => ({
         ...prev,
-        data: prev.data.map((b) => (b._id === id ? { ...b, ...updated } : b)),
+        data: prev.data.map((b) =>
+          b._id === id ? { ...b, ...updated } : b
+        ),
       }));
     } catch (e) {
       console.error(e);
@@ -71,53 +71,30 @@ export default function SearchUpdatePage() {
     }
   }
 
-  // One-way Top: nur auf true setzen; nie ausschalten
-  async function markTop(id, isTop) {
-    if (isTop) return; // bereits Top
-    try {
-      setPending((p) => ({ ...p, [id]: true }));
-      const updated = await updateBook(id, { BTop: true });
-      setResult((prev) => ({
-        ...prev,
-        data: prev.data.map((b) => (b._id === id ? { ...b, ...updated } : b)),
-      }));
-    } catch (e) {
-      console.error(e);
-      alert("Update fehlgeschlagen");
-    } finally {
-      setPending((p) => {
-        const n = { ...p };
-        delete n[id];
-        return n;
-      });
-    }
-  }
-
-  // Defensive: H/V + Timestamp aus neuen oder Legacy-Feldern ableiten
+  // Defensive: derive H/V + timestamp
   function deriveHV(b) {
-    if (b.BHVorV === "H" || b.BHVorV === "V") return { hv: b.BHVorV, at: b.BHVorVAt };
-    if (b.BHistorisiert) return { hv: "H", at: b.BHistorisiertAt };
-    if (b.BVorzeitig) return { hv: "V", at: b.BVorzeitigAt };
+    if (b.BHVorV === "H" || b.BHVorV === "V")
+      return { hv: b.BHVorV, at: b.BHVorVAt };
     return { hv: null, at: null };
   }
 
   return (
     <div className="space-y-4 p-4">
-      <h1 className="text-2xl font-bold">Suche &amp; Update (H/V &amp; Top)</h1>
+      <h1 className="text-2xl font-bold">Suche &amp; Update (alle Felder)</h1>
 
-      {/* Filter */}
+      {/* Filters */}
       <div className="p-4 border rounded grid gap-3 md:grid-cols-4">
         <label className="flex flex-col gap-1">
-          <span>Freitext (BMark, Autor, Keyword, Verlag …)</span>
+          <span>Freitext</span>
           <input
             className="border rounded p-2"
-            placeholder="z.B. egk001 oder Autor"
+            placeholder="z.B. Autor, Verlag, Stichwort …"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span>Von (Datum)</span>
+          <span>Von</span>
           <input
             type="date"
             className="border rounded p-2"
@@ -126,7 +103,7 @@ export default function SearchUpdatePage() {
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span>Bis (Datum)</span>
+          <span>Bis</span>
           <input
             type="date"
             className="border rounded p-2"
@@ -145,7 +122,7 @@ export default function SearchUpdatePage() {
           <button
             onClick={() => {
               setQuery("");
-              setFrom(daysAgoISO(6)); // Reset auf letzte 7 Tage
+              setFrom(todayISO());
               setTo(todayISO());
             }}
             className="px-4 py-2 rounded border"
@@ -156,7 +133,7 @@ export default function SearchUpdatePage() {
         </div>
       </div>
 
-      {/* Ergebnisse */}
+      {/* Results */}
       <div className="overflow-x-auto border rounded">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
@@ -164,7 +141,9 @@ export default function SearchUpdatePage() {
               <th className="p-2 text-left">BMark</th>
               <th className="p-2 text-left">Autor</th>
               <th className="p-2 text-left">Keyword</th>
+              <th className="p-2 text-left">KWP</th>
               <th className="p-2 text-left">Verlag</th>
+              <th className="p-2 text-left">Seiten</th>
               <th className="p-2 text-left">H/V</th>
               <th className="p-2 text-left">Top</th>
               <th className="p-2 text-left">Erfasst</th>
@@ -173,7 +152,7 @@ export default function SearchUpdatePage() {
           <tbody>
             {result.data.length === 0 && !loading && (
               <tr>
-                <td className="p-4" colSpan={7}>
+                <td className="p-4" colSpan={9}>
                   Keine Treffer
                 </td>
               </tr>
@@ -183,64 +162,155 @@ export default function SearchUpdatePage() {
               return (
                 <tr key={b._id} className="border-t">
                   <td className="p-2 font-mono">{b.BMarkb || "—"}</td>
-                  <td className="p-2">{b.BAutor}</td>
-                  <td className="p-2">{b.BKw}</td>
-                  <td className="p-2">{b.BVerlag}</td>
 
-                  {/* H/V mit Timestamp */}
+                  {/* Autor editable */}
                   <td className="p-2">
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-3">
-                        <label className="inline-flex items-center gap-1">
-                          <input
-                            type="radio"
-                            name={`hv-${b._id}`}
-                            value="H"
-                            checked={hv === "H"}
-                            disabled={!!pending[b._id]}
-                            onChange={() => setHV(b._id, "H")}
-                            onClick={() => {
-                              if (hv === "H" && !at) setHV(b._id, "H");
-                            }}
-                          />
-                          H
-                        </label>
-                        <label className="inline-flex items-center gap-1">
-                          <input
-                            type="radio"
-                            name={`hv-${b._id}`}
-                            value="V"
-                            checked={hv === "V"}
-                            disabled={!!pending[b._id]}
-                            onChange={() => setHV(b._id, "V")}
-                            onClick={() => {
-                              if (hv === "V" && !at) setHV(b._id, "V");
-                            }}
-                          />
-                          V
-                        </label>
-                      </div>
+                    <input
+                      className="border rounded px-2 py-1 w-32"
+                      value={b.BAutor || ""}
+                      disabled={!!pending[b._id]}
+                      onChange={(e) =>
+                        setResult((prev) => ({
+                          ...prev,
+                          data: prev.data.map((x) =>
+                            x._id === b._id
+                              ? { ...x, BAutor: e.target.value }
+                              : x
+                          ),
+                        }))
+                      }
+                      onBlur={(e) => saveField(b._id, "BAutor", e.target.value)}
+                    />
+                  </td>
+
+                  {/* Keyword editable */}
+                  <td className="p-2">
+                    <input
+                      className="border rounded px-2 py-1 w-28"
+                      value={b.BKw || ""}
+                      onChange={(e) =>
+                        setResult((prev) => ({
+                          ...prev,
+                          data: prev.data.map((x) =>
+                            x._id === b._id
+                              ? { ...x, BKw: e.target.value }
+                              : x
+                          ),
+                        }))
+                      }
+                      onBlur={(e) => saveField(b._id, "BKw", e.target.value)}
+                    />
+                  </td>
+
+                  {/* KP editable */}
+                  <td className="p-2">
+                    <input
+                      type="number"
+                      className="border rounded px-2 py-1 w-16"
+                      value={b.BKP || ""}
+                      onChange={(e) =>
+                        setResult((prev) => ({
+                          ...prev,
+                          data: prev.data.map((x) =>
+                            x._id === b._id
+                              ? { ...x, BKP: e.target.value }
+                              : x
+                          ),
+                        }))
+                      }
+                      onBlur={(e) =>
+                        saveField(b._id, "BKP", Number(e.target.value))
+                      }
+                    />
+                  </td>
+
+                  {/* Verlag editable */}
+                  <td className="p-2">
+                    <input
+                      className="border rounded px-2 py-1 w-32"
+                      value={b.BVerlag || ""}
+                      onChange={(e) =>
+                        setResult((prev) => ({
+                          ...prev,
+                          data: prev.data.map((x) =>
+                            x._id === b._id
+                              ? { ...x, BVerlag: e.target.value }
+                              : x
+                          ),
+                        }))
+                      }
+                      onBlur={(e) => saveField(b._id, "BVerlag", e.target.value)}
+                    />
+                  </td>
+
+                  {/* Seiten editable */}
+                  <td className="p-2">
+                    <input
+                      type="number"
+                      className="border rounded px-2 py-1 w-20"
+                      value={b.BSeiten || ""}
+                      onChange={(e) =>
+                        setResult((prev) => ({
+                          ...prev,
+                          data: prev.data.map((x) =>
+                            x._id === b._id
+                              ? { ...x, BSeiten: e.target.value }
+                              : x
+                          ),
+                        }))
+                      }
+                      onBlur={(e) =>
+                        saveField(b._id, "BSeiten", Number(e.target.value))
+                      }
+                    />
+                  </td>
+
+                  {/* H/V with timestamp */}
+                  <td className="p-2">
+                    <div className="flex gap-4 items-center">
+                      <label className="inline-flex items-center gap-1">
+                        <input
+                          type="radio"
+                          name={`hv-${b._id}`}
+                          value="H"
+                          checked={hv === "H"}
+                          onChange={() => saveField(b._id, "BHVorV", "H")}
+                        />
+                        H
+                      </label>
+                      <label className="inline-flex items-center gap-1">
+                        <input
+                          type="radio"
+                          name={`hv-${b._id}`}
+                          value="V"
+                          checked={hv === "V"}
+                          onChange={() => saveField(b._id, "BHVorV", "V")}
+                        />
+                        V
+                      </label>
                       <span className="text-xs text-gray-500">
                         {at ? new Date(at).toLocaleString() : "—"}
                       </span>
                     </div>
                   </td>
 
-                  {/* Top: Einmal-Schalter + Timestamp */}
+                  {/* Top flag */}
                   <td className="p-2">
                     {b.BTop ? (
                       <div className="flex items-center gap-2">
-                        <span className="inline-block px-2 py-0.5 border rounded text-xs">
+                        <span className="px-2 py-0.5 border rounded text-xs">
                           Top
                         </span>
                         <span className="text-xs text-gray-500">
-                          {b.BTopAt ? new Date(b.BTopAt).toLocaleString() : "—"}
+                          {b.BTopAt
+                            ? new Date(b.BTopAt).toLocaleString()
+                            : "—"}
                         </span>
                       </div>
                     ) : (
                       <button
                         className="px-2 py-1 border rounded text-xs"
-                        onClick={() => markTop(b._id, b.BTop)}
+                        onClick={() => saveField(b._id, "BTop", true)}
                         disabled={loading || !!pending[b._id]}
                       >
                         Als Top markieren
@@ -277,7 +347,9 @@ export default function SearchUpdatePage() {
         >
           Weiter ▶︎
         </button>
-        <div className="ml-auto text-sm text-gray-500">{result.total} Treffer</div>
+        <div className="ml-auto text-sm text-gray-500">
+          {result.total} Treffer
+        </div>
       </div>
     </div>
   );
