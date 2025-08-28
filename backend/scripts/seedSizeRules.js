@@ -238,7 +238,7 @@
           // ---- Size 19 ----
           {
             minB: 24,
-            maxB: 24.5,
+            maxB: 27,
             maxBInc: true,
             bands: [
               { condition: 'lt', value: 29, prefix: 'euk' },
@@ -246,19 +246,18 @@
               { condition: 'gt', value: 29, prefix: 'ouk' },
             ],
           },
-          // ---- Size 20 ----
+          // ---- Size 2+ ----
           {
-            minB: 24.5,
-            maxB: 27,
+            minB: 27,
+            maxB: null,          // no upper bound = anything larger
             maxBInc: true,
             bands: [
               { condition: 'lt', value: 32, prefix: 'eyk' },
               { condition: 'eq', values: [20.5, 21, 21.5], prefix: 'lyk' },
-              { condition: 'gt', value: 32, prefix: 'oyk' },
-            ],
-          },
-        ];
-
+              { condition: 'gt', value: 32, prefix: 'oyk' }
+            ]
+          }
+];
         const res = await SizeRule.insertMany(rules, { ordered: true });
         console.log(`✅ Inserted ${res.length} size rules`);
       } catch (err) {
