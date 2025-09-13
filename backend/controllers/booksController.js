@@ -45,7 +45,7 @@ function normalizeBook(b) {
 function applyOnlyMarkedGuard(filter, onlyMarked) {
   if (!onlyMarked) return filter;
 
-  const guard = { BMarkb: { $exists: true, $type: "string", $ne: "" } };
+  const guard = { BMarkb: { $exists: true, $type: 'string', $ne: '' } };
 
   if (filter.$or) {
     const orBlock = filter.$or;
@@ -76,7 +76,7 @@ async function listBooks(req, res) {
     } = req.query;
 
     const onlyMarked = ['1','true','yes','on'].includes(String(req.query.onlyMarked || '').toLowerCase());
-    const exact = ['1','true','yes','on'].includes(String(req.query.exact || '').toLowerCase());
+    const exactFlag  = ['1','true','yes','on'].includes(String(req.query.exact || '').toLowerCase());
 
     const ALLOWED_TEXT_FIELDS = ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
     const fieldsFromQuery = String(req.query.fields || '')
@@ -101,12 +101,15 @@ async function listBooks(req, res) {
       const mLte  = cleaned.match(/^<=\s*(\d+)$/) || cleaned.match(/^(\d+)\s*-[ ]*$/);
       const mEq   = cleaned.match(/^\d+$/);
 
+      // FORCE exact BMark match if the query looks like a mark OR fields include BMarkb
       if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
-        const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        filter.BMarkb = new RegExp(`^${escaped}$`, "i");
-      } else if (mRange || mGte || mLte || mEq) {
-        const pageFields = ["BSeiten", "Bseiten"];
-        const convInt    = (f) => ({ $convert: { input: `$${f}`, to: "int", onError: null, onNull: null } });
+        const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.BMarkb = new RegExp(`^${escaped}$`, 'i');
+      }
+      // Numeric/range pages on BSeiten (support legacy 'Bseiten' too)
+      else if (mRange || mGte || mLte || mEq) {
+        const pageFields = ['BSeiten', 'Bseiten'];
+        const convInt    = (f) => ({ $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null } });
         const toText     = (f) => ({ $toString: `$${f}` });
         const matchRange = (f) => ({ $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ } });
 
@@ -115,97 +118,90 @@ async function listBooks(req, res) {
           const hi = Number(mRange[2]);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $gte: lo, $lte: hi } })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $let: { vars: { m: matchRange(f) }, in: {
-                  $and: [
-                    { $ne: ["$$m", null] },
-                    { $lte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 0] } }, hi ] },
-                    { $gte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 1] } }, lo ] },
-                  ]
-                } }
-              }
-            })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $and: [
-                  { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                  { $lte: [ lo, { $toInt: { $replaceAll: { input: toText(f), find: "+", replacement: "" } } } ] }
-                ]
-              }
-            })),
+            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
+              $and: [
+                { $ne: ['$$m', null] },
+                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, hi ] },
+                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, lo ] },
+              ]
+            }}}})),
+            ...pageFields.map(f => ({ $expr: {
+              $and: [
+                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
+                { $lte: [ lo, { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } } ] }
+              ]
+            }})),
           ];
         } else if (mGte) {
           const x = Number(mGte[1]);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $gte: x } })),
             ...pageFields.map(f => ({ $expr: { $gte: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $and: [
-                  { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                  { $gte: [ { $toInt: { $replaceAll: { input: toText(f), find: "+", replacement: "" } } }, x ] }
-                ]
-              }
-            })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $let: { vars: { m: matchRange(f) }, in: {
-                  $and: [
-                    { $ne: ["$$m", null] },
-                    { $gte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 1] } }, x ] }
-                  ]
-                } }
-              }
-            })),
+            ...pageFields.map(f => ({ $expr: {
+              $and: [
+                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
+                { $gte: [ { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } }, x ] }
+              ]
+            }})),
+            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
+              $and: [
+                { $ne: ['$$m', null] },
+                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, x ] }
+              ]
+            }}}})),
           ];
         } else if (mLte) {
           const x = Number(mLte[1]);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $lte: x } })),
             ...pageFields.map(f => ({ $expr: { $lte: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $let: { vars: { m: matchRange(f) }, in: {
-                  $and: [
-                    { $ne: ["$$m", null] },
-                    { $lte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 0] } }, x ] }
-                  ]
-                } }
-              }
-            })),
+            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
+              $and: [
+                { $ne: ['$$m', null] },
+                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, x ] }
+              ]
+            }}}})),
           ];
         } else { // mEq
           const x = Number(cleaned);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: x })),
             ...pageFields.map(f => ({ $expr: { $eq: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $let: { vars: { m: matchRange(f) }, in: {
-                  $and: [
-                    { $ne: ["$$m", null] },
-                    { $lte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 0] } }, x ] },
-                    { $gte: [ { $toInt: { $arrayElemAt: ["$$m.captures", 1] } }, x ] },
-                  ]
-                } }
-              }
-            })),
-            ...pageFields.map(f => ({
-              $expr: {
-                $and: [
-                  { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                  { $lte: [ x, { $toInt: { $replaceAll: { input: toText(f), find: "+", replacement: "" } } } ] }
-                ]
-              }
-            })),
+            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
+              $and: [
+                { $ne: ['$$m', null] },
+                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, x ] },
+                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, x ] },
+              ]
+            }}}})),
+            ...pageFields.map(f => ({ $expr: {
+              $and: [
+                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
+                { $lte: [ x, { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } } ] }
+              ]
+            }})),
           ];
         }
-      } else {
-        const textFields = fieldsFromQuery.length ? fieldsFromQuery : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
-        if (exact) {
-          const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          filter.$or = textFields.map(f => ({ [f]: new RegExp(`^${escaped}$`, 'i') }));
+      }
+      // ----- TEXT search (non-numeric and not forced BMark) -----
+      else {
+        const textFields = fieldsFromQuery.length
+          ? fieldsFromQuery
+          : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+
+        // Exact if requested OR fields are scoped → exact literal match (case-insensitive, trimmed)
+        const exactRequested = exactFlag || fieldsFromQuery.length > 0;
+
+        if (exactRequested) {
+          const lc = cleaned.toLowerCase();
+          filter.$or = textFields.map(f => ({
+            $expr: {
+              $eq: [
+                { $toLower: { $trim: { input: `$${f}` } } },
+                lc
+              ]
+            }
+          }));
         } else {
           const rx = new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
           filter.$or = textFields.map(f => ({ [f]: rx }));
@@ -219,6 +215,7 @@ async function listBooks(req, res) {
       }
     }
 
+    // Apply "only with BMark"
     applyOnlyMarkedGuard(filter, onlyMarked);
 
     const [items, total] = await Promise.all([
@@ -244,7 +241,6 @@ async function registerBook(req, res) {
       return res.status(400).json({ error: 'BBreite and BHoehe (cm) are required' });
     }
 
-    // map (w,h) -> size prefix from DB rules
     let prefix = await sizeToPrefixFromDb(w, h);
     if (!prefix) return res.status(400).json({ error: 'No matching size rule' });
 
