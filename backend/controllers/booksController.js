@@ -61,6 +61,53 @@ function applyOnlyMarkedGuard(filter, onlyMarked) {
   return filter;
 }
 
+/* ---------- NEW: alias + exact helpers (place right here) ---------- */
+
+// Legacy/alias expansion so Atlas-imported fields are also checked
+const FIELD_ALIASES = {
+  BTitel:   ['BTitel', 'Titel', 'title'],
+  BAutor:   ['BAutor', 'Autor', 'author'],
+  BVerlag:  ['BVerlag', 'Bverlag', 'Verlag', 'publisher'],
+  BKw:      ['BKw', 'Bkw', 'keyword', 'keywords'],
+  BMarkb:   ['BMarkb', 'BMark', 'mark'],
+};
+
+// Expand a list of canonical field names to include their aliases
+function expandFieldAliases(keys) {
+  const set = new Set();
+  const source = (keys && keys.length) ? keys : Object.keys(FIELD_ALIASES);
+  for (const k of source) {
+    const al = FIELD_ALIASES[k] || [k];
+    al.forEach(a => set.add(a));
+  }
+  return Array.from(set);
+}
+
+// Build an $or clause for EXACT (case-insensitive, trimmed) on strings OR arrays
+function exactEqOrArrayClause(field, lcValue) {
+  return {
+    $or: [
+      // string: trim+lowercase equality
+      { $expr: { $eq: [ { $toLower: { $trim: { input: `$${field}` } } }, lcValue ] } },
+      // array: any element after trim+lowercase equals lcValue
+      {
+        $expr: {
+          $in: [
+            lcValue,
+            {
+              $map: {
+                input: { $cond: [ { $isArray: `$${field}` }, `$${field}`, [] ] },
+                as: "v",
+                in: { $toLower: { $trim: { input: "$$v" } } }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  };
+}
+
 /* ========================= LIST (SEARCH) ========================= */
 async function listBooks(req, res) {
   try {
@@ -185,24 +232,21 @@ async function listBooks(req, res) {
       }
       // ----- TEXT search (non-numeric and not forced BMark) -----
       else {
-        const textFields = fieldsFromQuery.length
+        const _requested = fieldsFromQuery.length
           ? fieldsFromQuery
           : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+        // expand to include Atlas aliases (Bverlag, Verlag, publisher, etc.)
+        const textFields = expandFieldAliases(_requested);
 
-        // Exact if requested OR fields are scoped → exact literal match (case-insensitive, trimmed)
+        // Exact if requested OR fields are scoped → exact literal match (case-insensitive, trimmed), supports arrays
         const exactRequested = exactFlag || fieldsFromQuery.length > 0;
 
         if (exactRequested) {
           const lc = cleaned.toLowerCase();
-          filter.$or = textFields.map(f => ({
-            $expr: {
-              $eq: [
-                { $toLower: { $trim: { input: `$${f}` } } },
-                lc
-              ]
-            }
-          }));
+          // build $or across all aliases; each alias supports string or array values
+          filter.$or = textFields.map(f => exactEqOrArrayClause(f, lc));
         } else {
+          // "contains" fallback (regex), include aliases
           const rx = new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
           filter.$or = textFields.map(f => ({ [f]: rx }));
         }
