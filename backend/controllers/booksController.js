@@ -142,164 +142,89 @@ exports.listBooks = async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 };
-*/
-/* ------------------------- LIST -------------------------
-exports.listBooks = async (req, res) => {
-  try {
-    const {
-      q,
-      page = 1,
-      limit = 20,
-      sort = 'BEind',
-      order = 'desc',
-      createdFrom,
-      createdTo,
-    } = req.query;
+//* ------------------------- LIST ------------------------- */
+ // GET /api/books
+ // Query: q, page, limit, sort/sortBy, order, createdFrom, createdTo
+ exports.listBooks = async (req, res) => {
+   try {
+     const {
+       q,
+       page = 1,
+       limit = 20,
+       sort,
+       sortBy,
+       order = 'desc',
+       createdFrom,
+       createdTo,
+     } = req.query;
 
-    const pg = Math.max(1, parseInt(page, 10) || 1);
-    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
-    const skip = (pg - 1) * lim;
-    const direction = order === 'asc' ? 1 : -1;
+     const pg = Math.max(1, parseInt(page, 10) || 1);
+     const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
+     const skip = (pg - 1) * lim;
+     const direction = order === 'asc' ? 1 : -1;
 
-    const filter = {};
+     // ✅ support both ?sort= and ?sortBy=
+     const sortField = sortBy || sort || 'BEind';
 
-    if (q) {
-      // When q is present → ignore date filters
-      const cleaned = String(q).trim();
-      const num = Number(cleaned);
+     const filter = {};
 
-      if (Number.isFinite(num)) {
-        // purely numeric → search only pages
-        filter.BSeiten = num;
-      } else {
-        const rx = new RegExp(
-          cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-          'i'
-        );
-        filter.$or = [
-          { BTitel: rx },
-          { BAutor: rx },
-          { BVerlag: rx },
-          { BKw: rx },
-          { BMarkb: rx },
-        ];
-      }
-    } else {
-      // Only apply date filter if q is empty
-      if (createdFrom || createdTo) {
-        filter.BEind = {};
-        if (createdFrom)
-          filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
-        if (createdTo)
-          filter.BEind.$lt = new Date(createdTo + 'T23:59:59.999Z');
-      }
-    }
+     if (q) {
+       const cleaned = String(q).trim();
+       const num = Number(cleaned);
 
-    console.log('listBooks filter:', JSON.stringify(filter, null, 2));
+       if (Number.isFinite(num)) {
+         // purely numeric query → interpret as page count
+         filter.BSeiten = num;
+       } else {
+         const rx = new RegExp(
+           cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+           'i'
+         );
+         filter.$or = [
+           { BTitel: rx },
+           { BAutor: rx },
+           { BVerlag: rx },
+           { BKw: rx },
+           { BMarkb: rx },
+         ];
+       }
+     } else {
+       // Only apply date filter if q is empty
+       if (createdFrom || createdTo) {
+         filter.BEind = {};
+         if (createdFrom)
+           filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
+         if (createdTo)
+           filter.BEind.$lt = new Date(createdTo + 'T23:59:59.999Z');
+       }
+     }
 
-    const [items, total] = await Promise.all([
-      Book.find(filter)
-        .sort({ [sort]: direction, _id: -1 })
-        .skip(skip)
-        .limit(lim)
-        .lean(),
-      Book.countDocuments(filter),
-    ]);
+     console.log('listBooks filter:', JSON.stringify(filter, null, 2));
+     console.log('listBooks sortField:', sortField, 'order:', direction);
 
-    const data = items.map((b) => ({ ...b, status: getStatus(b) }));
-    res.json({
-      data,
-      page: pg,
-      limit: lim,
-      total,
-      pages: Math.ceil(total / lim),
-    });
-  } catch (err) {
-    console.error('listBooks error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-};*/
-/* ------------------------- LIST ------------------------- */
-// GET /api/books
-// Query: q, page, limit, sort/sortBy, order, createdFrom, createdTo
-exports.listBooks = async (req, res) => {
-  try {
-    const {
-      q,
-      page = 1,
-      limit = 20,
-      sort,
-      sortBy,
-      order = 'desc',
-      createdFrom,
-      createdTo,
-    } = req.query;
+     // ✅ Return all fields – no projection
+     const [items, total] = await Promise.all([
+       Book.find(filter)
+         .sort({ [sortField]: direction, _id: -1 })
+         .skip(skip)
+         .limit(lim)
+         .lean(),
+       Book.countDocuments(filter),
+     ]);
 
-    const pg = Math.max(1, parseInt(page, 10) || 1);
-    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
-    const skip = (pg - 1) * lim;
-    const direction = order === 'asc' ? 1 : -1;
-
-    // ✅ support both ?sort= and ?sortBy=
-    const sortField = sortBy || sort || 'BEind';
-
-    const filter = {};
-
-    if (q) {
-      const cleaned = String(q).trim();
-      const num = Number(cleaned);
-
-      if (Number.isFinite(num)) {
-        // purely numeric query -> interpret as page count
-        filter.BSeiten = num;
-      } else {
-        const rx = new RegExp(
-          cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-          'i'
-        );
-        filter.$or = [
-          { BTitel: rx },
-          { BAutor: rx },
-          { BVerlag: rx },
-          { BKw: rx },
-          { BMarkb: rx },
-        ];
-      }
-    } else {
-      if (createdFrom || createdTo) {
-        filter.BEind = {};
-        if (createdFrom)
-          filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
-        if (createdTo)
-          filter.BEind.$lt = new Date(createdTo + 'T23:59:59.999Z');
-      }
-    }
-
-    console.log('listBooks filter:', JSON.stringify(filter, null, 2));
-    console.log('listBooks sortField:', sortField, 'order:', direction);
-
-    const [items, total] = await Promise.all([
-      Book.find(filter)
-        .sort({ [sortField]: direction, _id: -1 })
-        .skip(skip)
-        .limit(lim)
-        .lean(),
-      Book.countDocuments(filter),
-    ]);
-
-    const data = items.map((b) => ({ ...b, status: getStatus(b) }));
-    res.json({
-      data,
-      page: pg,
-      limit: lim,
-      total,
-      pages: Math.ceil(total / lim),
-    });
-  } catch (err) {
-    console.error('listBooks error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-};
+     const data = items.map((b) => ({ ...b, status: getStatus(b) }));
+     res.json({
+       data,
+       page: pg,
+       limit: lim,
+       total,
+       pages: Math.ceil(total / lim),
+     });
+   } catch (err) {
+     console.error('listBooks error:', err);
+     res.status(500).json({ error: 'Server error' });
+   }
+ };
 
 /* ------------------------- REGISTER ------------------------- */
 // POST /api/books/register
