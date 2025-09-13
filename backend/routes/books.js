@@ -5,7 +5,6 @@ const ctrl = require('../controllers/booksController');
 
 // Register a new book
 router.post('/register', ctrl.registerBook);
-
 // Autocomplete (place this BEFORE /:id!)
 router.get('/autocomplete/:field', ctrl.autocomplete);
 

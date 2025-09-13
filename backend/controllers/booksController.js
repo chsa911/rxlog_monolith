@@ -1,4 +1,3 @@
-// backend/controllers/booksController.js
 const Book = require('../models/Book');
 const BMarkf = require('../models/BMarkf');
 const { getStatus, computeRank } = require('../utils/status');
@@ -42,16 +41,28 @@ function normalizeBook(b) {
   return x;
 }
 
-/* ========================= LIST (SEARCH) =========================
-   GET /api/books
-   Query: q, page, limit, sort/sortBy, order, createdFrom, createdTo
-   - If q looks like a BMark (letters+digits): exact match on BMarkb (case-insensitive)
-   - If q numeric/range: BSeiten search (checks both BSeiten and legacy Bseiten)
-     Supports: 180-220, >=200, <=150, 200+
-   - Else text: BTitel/BAutor/BVerlag/BKw/BMarkb
-   - Date filter (BEind) applies ONLY when q is empty
-=================================================================== */
-exports.listBooks = async (req, res) => {
+// AND a "must have BMarkb" guard to the filter if requested
+function applyOnlyMarkedGuard(filter, onlyMarked) {
+  if (!onlyMarked) return filter;
+
+  const guard = { BMarkb: { $exists: true, $type: "string", $ne: "" } };
+
+  if (filter.$or) {
+    const orBlock = filter.$or;
+    delete filter.$or;
+    filter.$and = (filter.$and || []).concat([{ $or: orBlock }, guard]);
+    return filter;
+  }
+  if (filter.$and) {
+    filter.$and.push(guard);
+    return filter;
+  }
+  Object.assign(filter, guard);
+  return filter;
+}
+
+/* ========================= LIST (SEARCH) ========================= */
+async function listBooks(req, res) {
   try {
     const {
       q,
@@ -64,12 +75,19 @@ exports.listBooks = async (req, res) => {
       createdTo,
     } = req.query;
 
+    const onlyMarked = ['1','true','yes','on'].includes(String(req.query.onlyMarked || '').toLowerCase());
+    const exact = ['1','true','yes','on'].includes(String(req.query.exact || '').toLowerCase());
+
+    const ALLOWED_TEXT_FIELDS = ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+    const fieldsFromQuery = String(req.query.fields || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => ALLOWED_TEXT_FIELDS.includes(s));
+
     const pg = Math.max(1, parseInt(page, 10) || 1);
     const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pg - 1) * lim;
     const direction = order === 'asc' ? 1 : -1;
-
-    // support both ?sort= and ?sortBy=
     const sortField = sortBy || sort || 'BEind';
 
     const filter = {};
@@ -77,36 +95,26 @@ exports.listBooks = async (req, res) => {
     if (q) {
       const cleaned = String(q).trim();
 
-      // ---- SPECIAL CASE: direct BMark lookup (letters + digits) ----
-      const isBMarkPattern =
-        /^[a-z]+[0-9]{2,}$/i.test(cleaned) ||            // letters then digits (e.g., "ekg030")
-        (/[a-z]/i.test(cleaned) && /\d/.test(cleaned));  // contains both letters and digits
+      const looksLikeBMark = /^[a-z]+[0-9]{2,}$/i.test(cleaned);
+      const mRange = cleaned.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+      const mGte  = cleaned.match(/^(?:>=\s*|)(\d+)\s*\+$/) || cleaned.match(/^>=\s*(\d+)$/);
+      const mLte  = cleaned.match(/^<=\s*(\d+)$/) || cleaned.match(/^(\d+)\s*-[ ]*$/);
+      const mEq   = cleaned.match(/^\d+$/);
 
-      if (isBMarkPattern) {
+      if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
         const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         filter.BMarkb = new RegExp(`^${escaped}$`, "i");
-      } else {
-        // -------- BSeiten numeric/range OR generic text search --------
-        // Support both canonical and legacy page fields
+      } else if (mRange || mGte || mLte || mEq) {
         const pageFields = ["BSeiten", "Bseiten"];
-        const convInt     = (f) => ({ $convert: { input: `$${f}`, to: "int", onError: null, onNull: null } });
-        const toText      = (f) => ({ $toString: `$${f}` });
-        const matchRange  = (f) => ({ $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ } });
-
-        const mRange = cleaned.match(/^(\d+)\s*[-–—]\s*(\d+)$/);            // "180-220"
-        const mGte  = cleaned.match(/^(?:>=\s*|)(\d+)\s*\+$/) ||            // "200+"
-                      cleaned.match(/^>=\s*(\d+)$/);                         // ">=200"
-        const mLte  = cleaned.match(/^<=\s*(\d+)$/) ||                      // "<=150"
-                      cleaned.match(/^(\d+)\s*-[ ]*$/);                      // "150-"
-        const mEq   = cleaned.match(/^\d+$/);                                // "200"
+        const convInt    = (f) => ({ $convert: { input: `$${f}`, to: "int", onError: null, onNull: null } });
+        const toText     = (f) => ({ $toString: `$${f}` });
+        const matchRange = (f) => ({ $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ } });
 
         if (mRange) {
           const lo = Number(mRange[1]);
           const hi = Number(mRange[2]);
           filter.$or = [
-            // numeric range on either field
             ...pageFields.map(f => ({ [f]: { $gte: lo, $lte: hi } })),
-            // string "a-b" overlapping [lo, hi]
             ...pageFields.map(f => ({
               $expr: {
                 $let: { vars: { m: matchRange(f) }, in: {
@@ -118,7 +126,6 @@ exports.listBooks = async (req, res) => {
                 } }
               }
             })),
-            // "x+" overlapping [lo, hi]
             ...pageFields.map(f => ({
               $expr: {
                 $and: [
@@ -133,7 +140,6 @@ exports.listBooks = async (req, res) => {
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $gte: x } })),
             ...pageFields.map(f => ({ $expr: { $gte: [ convInt(f), x ] } })),
-            // "x+"
             ...pageFields.map(f => ({
               $expr: {
                 $and: [
@@ -142,7 +148,6 @@ exports.listBooks = async (req, res) => {
                 ]
               }
             })),
-            // string range with docHi >= x
             ...pageFields.map(f => ({
               $expr: {
                 $let: { vars: { m: matchRange(f) }, in: {
@@ -159,7 +164,6 @@ exports.listBooks = async (req, res) => {
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $lte: x } })),
             ...pageFields.map(f => ({ $expr: { $lte: [ convInt(f), x ] } })),
-            // string range with docLo <= x
             ...pageFields.map(f => ({
               $expr: {
                 $let: { vars: { m: matchRange(f) }, in: {
@@ -171,14 +175,11 @@ exports.listBooks = async (req, res) => {
               }
             })),
           ];
-        } else if (mEq) {
+        } else { // mEq
           const x = Number(cleaned);
           filter.$or = [
-            // direct equality on either field
             ...pageFields.map(f => ({ [f]: x })),
-            // equality after string→int conversion
             ...pageFields.map(f => ({ $expr: { $eq: [ convInt(f), x ] } })),
-            // string range "a-b" that contains x
             ...pageFields.map(f => ({
               $expr: {
                 $let: { vars: { m: matchRange(f) }, in: {
@@ -190,7 +191,6 @@ exports.listBooks = async (req, res) => {
                 } }
               }
             })),
-            // "x+" interpreted as [x, +∞)
             ...pageFields.map(f => ({
               $expr: {
                 $and: [
@@ -200,14 +200,18 @@ exports.listBooks = async (req, res) => {
               }
             })),
           ];
+        }
+      } else {
+        const textFields = fieldsFromQuery.length ? fieldsFromQuery : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+        if (exact) {
+          const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          filter.$or = textFields.map(f => ({ [f]: new RegExp(`^${escaped}$`, 'i') }));
         } else {
-          // Text search across fields (fallback)
           const rx = new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-          filter.$or = [{ BTitel: rx }, { BAutor: rx }, { BVerlag: rx }, { BKw: rx }, { BMarkb: rx }];
+          filter.$or = textFields.map(f => ({ [f]: rx }));
         }
       }
     } else {
-      // Only apply date filter if q is empty
       if (createdFrom || createdTo) {
         filter.BEind = {};
         if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
@@ -215,41 +219,27 @@ exports.listBooks = async (req, res) => {
       }
     }
 
+    applyOnlyMarkedGuard(filter, onlyMarked);
+
     const [items, total] = await Promise.all([
-      Book.find(filter)
-        .sort({ [sortField]: direction, _id: -1 })
-        .skip(skip)
-        .limit(lim)
-        .lean(),
+      Book.find(filter).sort({ [sortField]: direction, _id: -1 }).skip(skip).limit(lim).lean(),
       Book.countDocuments(filter),
     ]);
 
-    // Normalize every document before sending to the client
     const data = items.map((b) => normalizeBook({ ...b, status: getStatus(b) }));
-
-    res.json({
-      data,
-      page: pg,
-      limit: lim,
-      total,
-      pages: Math.ceil(total / lim),
-    });
+    res.json({ data, page: pg, limit: lim, total, pages: Math.ceil(total / lim) });
   } catch (err) {
     console.error('listBooks error:', err);
     res.status(500).json({ error: 'Server error' });
   }
-};
+}
 
-/* ========================= REGISTER =========================
-   POST /api/books/register
-   Body: { BBreite, BHoehe, ...fields }
-================================================================ */
-exports.registerBook = async (req, res) => {
+/* ========================= REGISTER (POST /api/books/register) ========================= */
+async function registerBook(req, res) {
   try {
     const { BBreite, BHoehe, ...fields } = req.body;
     const w = toNum(BBreite);
     const h = toNum(BHoehe);
-
     if (w === null || h === null) {
       return res.status(400).json({ error: 'BBreite and BHoehe (cm) are required' });
     }
@@ -276,7 +266,7 @@ exports.registerBook = async (req, res) => {
       return res.status(409).json({ error: `No free BMark for prefix ${prefix}` });
     }
 
-    // Normalize & stamp control fields coming from form
+    // Normalizations from form
     if (typeof fields.BHVorV === 'string') {
       const val = fields.BHVorV.trim().toUpperCase();
       if (val === 'H' || val === 'V') {
@@ -292,7 +282,6 @@ exports.registerBook = async (req, res) => {
 
     if (typeof fields.BTop !== 'undefined') {
       fields.BTop = !!fields.BTop;
-      // If Top is true at registration, stamp once
       fields.BTopAt = fields.BTop ? new Date() : null;
     }
 
@@ -303,17 +292,15 @@ exports.registerBook = async (req, res) => {
       BMarkb: picked.BMark,
     });
 
-    res.json({ ...normalizeBook(doc.toObject()), status: getStatus(doc) });
+    res.status(201).json({ ...normalizeBook(doc.toObject()), status: getStatus(doc) });
   } catch (err) {
     console.error('registerBook error:', err);
     res.status(500).json({ error: err.message || 'Server error' });
   }
-};
+}
 
-/* ========================= GET ONE =========================
-   GET /api/books/:id
-================================================================ */
-exports.getBook = async (req, res) => {
+/* ========================= GET ONE (GET /api/books/:id) ========================= */
+async function getBook(req, res) {
   try {
     const { id } = req.params;
     const book = await Book.findById(id).lean();
@@ -323,12 +310,10 @@ exports.getBook = async (req, res) => {
     console.error('getBook error:', err);
     res.status(400).json({ error: 'Bad request' });
   }
-};
+}
 
-/* ========================= UPDATE (PATCH) =========================
-   PATCH /api/books/:id
-================================================================ */
-exports.updateBook = async (req, res) => {
+/* ========================= UPDATE (PATCH /api/books/:id) ========================= */
+async function updateBook(req, res) {
   try {
     const { id } = req.params;
     const body = { ...req.body };
@@ -336,29 +321,22 @@ exports.updateBook = async (req, res) => {
     if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
     if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
 
-    // Top: if true stamp now; if false do NOT clear BTopAt
     if (typeof body.BTop === 'boolean') {
-      if (body.BTop === true) {
-        body.BTopAt = new Date();
-      } else {
-        delete body.BTopAt; // keep existing timestamp
-      }
+      if (body.BTop === true) body.BTopAt = new Date();
+      else delete body.BTopAt;
     }
 
-    // H/V: set flag & timestamp; schedule (or reschedule) release in 7 days
     if (body.BHVorV === 'H' || body.BHVorV === 'V') {
       body.BHVorVAt = new Date();
       body.BMarkReleaseDue = sevenDaysFromNow();
     }
 
     const updated = await Book.findByIdAndUpdate(id, body, {
-      new: true,
-      runValidators: true,
+      new: true, runValidators: true,
     });
 
     if (!updated) return res.status(404).json({ error: 'Book not found' });
 
-    // Optional: recompute rank if applicable
     try {
       if (typeof computeRank === 'function') {
         const newRank = computeRank(updated);
@@ -367,7 +345,7 @@ exports.updateBook = async (req, res) => {
           await updated.save();
         }
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (_) { /* ignore rank errors */ }
 
     const obj = updated.toObject();
     res.json({ ...normalizeBook(obj), status: getStatus(updated) });
@@ -375,12 +353,10 @@ exports.updateBook = async (req, res) => {
     console.error('updateBook error:', err);
     res.status(400).json({ error: err.message || 'Bad request' });
   }
-};
+}
 
-/* ========================= DELETE =========================
-   DELETE /api/books/:id
-================================================================ */
-exports.deleteBook = async (req, res) => {
+/* ========================= DELETE (DELETE /api/books/:id) ========================= */
+async function deleteBook(req, res) {
   try {
     const { id } = req.params;
     const book = await Book.findById(id);
@@ -390,7 +366,6 @@ exports.deleteBook = async (req, res) => {
     await Book.findByIdAndDelete(id);
 
     if (mark) {
-      // return mark to pool (idempotent)
       await BMarkf.updateOne(
         { BMark: mark },
         { $setOnInsert: { BMark: mark, rank: 9999 } },
@@ -403,13 +378,10 @@ exports.deleteBook = async (req, res) => {
     console.error('deleteBook error:', err);
     res.status(500).json({ error: 'Server error' });
   }
-};
+}
 
-/* ========================= AUTOCOMPLETE =========================
-   GET /api/books/autocomplete/:field?q=...
-   Allowed fields: BAutor, BKw, BVerlag
-================================================================ */
-exports.autocomplete = async (req, res) => {
+/* ========================= AUTOCOMPLETE (GET /api/books/autocomplete/:field) ========================= */
+async function autocomplete(req, res) {
   try {
     const field = req.params.field || req.query.field;
     const { q } = req.query;
@@ -431,4 +403,14 @@ exports.autocomplete = async (req, res) => {
     console.error('autocomplete error:', err);
     res.status(500).json({ error: 'Server error' });
   }
+}
+
+/* ------------------------- exports ------------------------- */
+module.exports = {
+  listBooks,
+  registerBook,
+  getBook,
+  updateBook,
+  deleteBook,
+  autocomplete,
 };
