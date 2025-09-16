@@ -4,7 +4,7 @@
 // Node 18+ recommended (has global fetch)
 //
 // Usage:
-//   cd /Volumes/daten/rxapp/backend
+//   cd /Volumes/daten/rxlog/backend
 //   node tests/testRegisterAndUpdateToday.js
 //
 // Env options:

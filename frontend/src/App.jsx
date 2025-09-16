@@ -9,7 +9,7 @@ export default function App() {
         {/* Top bar */}
         <header className="border-b bg-white/70 backdrop-blur sticky top-0 z-10">
           <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
-            <div className="font-semibold">rxapp</div>
+            <div className="font-semibold">rxlog</div>
             <nav className="flex items-center gap-4 text-sm">
               <NavLink
                 to="/register"
