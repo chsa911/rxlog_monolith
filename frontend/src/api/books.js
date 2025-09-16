@@ -24,7 +24,7 @@ export async function updateBook(id, data) {
     try {
       const j = await res.json();
       if (j?.error) msg = j.error;
-    } catch {}
+} catch (_) { /* noop */ }
     throw new Error(msg);
   }
   return res.json();

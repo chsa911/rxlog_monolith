@@ -11,17 +11,22 @@
     "create:indexes": "node scripts/createIndexes.js",
     "cleanup:bmarkf": "node scripts/cleanupBMarks.js",
     "report:missing": "node scripts/reportMissingBMarks.js",
-    "normalize:bmarkf": "node scripts/normalizeBMarkf.js"
+    "normalize:bmarkf": "node scripts/normalizeBMarkf.js",
+    "lint": "eslint ."
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
+    "lint": "^0.8.19",
     "mongoose": "^8.17.2",
     "morgan": "^1.10.1",
     "node-cron": "^4.2.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^8.57.1",
+    "globals": "^13.24.0",
     "jest": "^30.0.5",
     "nodemon": "^3.1.0"
   }

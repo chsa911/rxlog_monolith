@@ -1,29 +1,44 @@
-import js from '@eslint/js'
-import globals from 'globals'
-import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
-import { defineConfig, globalIgnores } from 'eslint/config'
+// frontend/eslint.config.js
+import js from '@eslint/js';
+import reactHooks from 'eslint-plugin-react-hooks';
+import reactRefresh from 'eslint-plugin-react-refresh';
+import globals from 'globals';
 
-export default defineConfig([
-  globalIgnores(['dist']),
+export default [
+  js.configs.recommended,
   {
     files: ['**/*.{js,jsx}'],
-    extends: [
-      js.configs.recommended,
-      reactHooks.configs['recommended-latest'],
-      reactRefresh.configs.vite,
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'build/**',
+      'public/**',
     ],
     languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
+      ecmaVersion: 2022,
+      sourceType: 'module',
       parserOptions: {
-        ecmaVersion: 'latest',
-        ecmaFeatures: { jsx: true },
-        sourceType: 'module',
+        ecmaFeatures: { jsx: true },   // ✅ JSX parsing lives here in v9
+      },
+      globals: {
+        ...globals.browser,            // window, document, etc.
+        ...globals.es2022,
       },
     },
+    plugins: {
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // React hooks best practices
+      ...reactHooks.configs.recommended.rules,
+      // Vite fast refresh helper
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // General polish
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      'no-undef': 'error',
+      // Allow empty catch blocks if intentional
+      'no-empty': ['warn', { allowEmptyCatch: true }],
     },
   },
-])
+];
