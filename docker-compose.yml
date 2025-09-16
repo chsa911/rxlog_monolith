@@ -1,0 +1,26 @@
+services:
+  api:
+    build: ./backend
+    env_file: ./.env
+    ports:
+      - "4000:4000"
+    depends_on:
+      - mongo
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+
+volumes:
+  mongo-data:

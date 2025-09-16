@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-*.log*
+pnpm-debug.log*
+
+# Deps
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+
+# Coverage
+coverage/
+*.lcov
+
+# Env (keep example)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE/OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Docker runtime
+*.pid
+*.pid.lock
+*.seed

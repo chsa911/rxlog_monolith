@@ -10,7 +10,11 @@ app.use(morgan('dev'));
 app.use(express.json());
 
 // CORS for Vite dev at 5173
-app.use(cors({ origin: 'http://localhost:5173' }));
+// backend/app.js
+const allowed = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map(s => s.trim());
+app.use(cors({ origin: allowed }));
 
 mongoose.connection.once('open', () => {
   console.log('✅ Mongo connected to DB:', mongoose.connection.db.databaseName);
