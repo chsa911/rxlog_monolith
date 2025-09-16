@@ -24,7 +24,10 @@ export async function updateBook(id, data) {
     try {
       const j = await res.json();
       if (j?.error) msg = j.error;
-} catch (_) { /* noop */ }
+} catch (err) {
+  console.error(err);
+  throw err;
+}
     throw new Error(msg);
   }
   return res.json();
