@@ -84,9 +84,10 @@ flowchart LR
 ```
 
 ## 🗺 Roadmap
+- Improvement of UX of Web-App
 - Native Apps for Android and iOS to query and update reading-data
 - AI supported auto-complete of book-information
-- Analytic tools to create reading profiles
+- Analytic tools to create reading profiles and to discover new pageturner
 - Tools to improve quality of imported historic book-data
 - Add wishlist status for books not yet owned
 - Import/export from external services (Goodreads, Pocket, …)
