@@ -132,28 +132,65 @@ function exactEqOrArrayClause(field, lcValue) {
 /* ========================= LIST (SEARCH) ========================= */
 async function listBooks(req, res) {
   try {
+    // Log once to see what the browser actually sends
+    console.log('[listBooks] query =', req.query);
+
+    // 1) Sanitize inputs (ignore unknowns)
     const {
-      q, page = 1, limit = 20, sort, sortBy, order = 'desc',
-      createdFrom, createdTo,
+      q,
+      page = 1,
+      limit = 20,
+      sort,
+      sortBy,
+      order = 'desc',
+      createdFrom,
+      createdTo,
+      fields,            // "BAutor,BKw,..." optional
+      onlyMarked,
+      exact,
+      // ignore anything else (e.g. stray AbortSignal etc.)
     } = req.query;
 
-    const onlyMarked = ['1','true','yes','on'].includes(String(req.query.onlyMarked || '').toLowerCase());
-    const exactFlag  = ['1','true','yes','on'].includes(String(req.query.exact || '').toLowerCase());
+    // 2) Helpers
+    const safeRegExp = (s, flags = 'i') => {
+      const escaped = String(s ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(escaped, flags);
+    };
+    const parseIntSafe = (v, d) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : d;
+    };
+    const normEq = (field, lc) => ({
+      $expr: { $eq: [ { $toLower: { $trim: { input: `$${field}` } } }, lc ] }
+    });
 
+    // 3) Pagination & sorting (whitelist sort fields)
+    const pg   = Math.max(1, parseIntSafe(page, 1));
+    const lim  = Math.min(200, Math.max(1, parseIntSafe(limit, 20)));
+    const skip = (pg - 1) * lim;
+
+    const SORT_WHITELIST = new Set(['BEind','BSeiten','BAutor','BTitel','BVerlag','_id']);
+    const direction = order === 'asc' ? 1 : -1;
+    const sortField = SORT_WHITELIST.has(String(sortBy || sort || '').trim())
+      ? (sortBy || sort)
+      : 'BEind';
+
+    // 4) Field scoping (include titleKeyword/keywords)
     const ALLOWED_TEXT_FIELDS = ['BTitel','BAutor','BVerlag','BKw','BMarkb','titleKeyword','keywords'];
-    const fieldsFromQuery = String(req.query.fields || '')
-      .split(',').map(s => s.trim()).filter(Boolean)
+    const fieldsFromQuery = String(fields || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
       .filter(s => ALLOWED_TEXT_FIELDS.includes(s));
 
-    const pg = Math.max(1, parseIntSafe(page, 1));
-    const lim = Math.min(200, Math.max(1, parseIntSafe(limit, 20)));
-    const skip = (pg - 1) * lim;
-    const direction = order === 'asc' ? 1 : -1;
-    const sortField = sortBy || sort || 'BEind';
+    // 5) Flags
+    const onlyMarkedFlag = ['1','true','yes','on'].includes(String(onlyMarked || '').toLowerCase());
+    const exactFlag      = ['1','true','yes','on'].includes(String(exact      || '').toLowerCase());
 
+    // 6) Build Mongo filter — guard every step so we return 400 instead of 500 on bad inputs
     const filter = {};
     try {
-      if (q) {
+      if (q && String(q).trim().length) {
         const cleaned = String(q).trim();
         const looksLikeBMark = /^[a-z]+[0-9]{2,}$/i.test(cleaned);
         const mRange = cleaned.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
@@ -161,23 +198,30 @@ async function listBooks(req, res) {
         const mLte  = cleaned.match(/^<=\s*(\d+)$/) || cleaned.match(/^(\d+)\s*-[ ]*$/);
         const mEq   = cleaned.match(/^\d+$/);
 
-        if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
-          // tolerant ek/eki variant matching across BMarkb/barcode/BMark
-          const lc = cleaned.toLowerCase();
-          const m = lc.match(/^([a-z]+)(\d{2,})$/);
-          const variants = new Set([lc]);
-          if (m) {
-            const series = m[1], num = m[2];
-            if (series.endsWith('i')) variants.add(series.slice(0,-1) + num);
-            else variants.add(series + 'i' + num);
-          }
-          filter.$or = [];
-          for (const v of variants) {
-            filter.$or.push(normEq('BMarkb', v));
-            filter.$or.push(normEq('barcode', v));
-            filter.$or.push(normEq('BMark',  v)); // legacy
-          }
-        } else if (mRange || mGte || mLte || mEq) {
+ if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
+   // ✅ exact match, case-insensitive, no tolerance
+   // returns only docs where value is *exactly* eki001 (not ek001)
+   const lc = cleaned.toLowerCase();
+
+   const exactEq = (field) => ({
+     $expr: {
+       $eq: [
+         // Convert to string first so numbers don't break $trim/$toLower
+         { $toLower: { $trim: { input: { $toString: `$${field}` } } } },
+         lc,
+       ],
+     },
+   });
+
+   filter.$or = [
+     exactEq('BMarkb'),   // canonical
+     exactEq('barcode'),  // mirror
+     exactEq('BMark'),    // legacy
+   ];
+ }
+
+        else if (mRange || mGte || mLte || mEq) {
+          // numeric/pages searches (keep your existing logic)
           const pageFields = ['BSeiten', 'Bseiten'];
           const convInt    = (f) => ({ $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null } });
           const toText     = (f) => ({ $toString: `$${f}` });
@@ -251,18 +295,36 @@ async function listBooks(req, res) {
               }})),
             ];
           }
-        } else {
+        }
+        else {
+          // TEXT search: include titleKeyword/keywords unless fields= narrows them out
           const _requested = fieldsFromQuery.length
             ? fieldsFromQuery
             : ['BTitel','BAutor','BVerlag','BKw','BMarkb','titleKeyword','keywords'];
-          const textFields = expandFieldAliases(_requested);
+
           const exactRequested = exactFlag || fieldsFromQuery.length > 0;
+          const textFields = _requested.flatMap(k => {
+            // expand a few aliases by hand to avoid over-expansion
+            if (k === 'BTitel')  return ['BTitel', 'title', 'titleKeyword'];
+            if (k === 'BKw')     return ['BKw', 'keyword', 'keywords', 'titleKeyword'];
+            return [k];
+          });
 
           if (exactRequested) {
             const lc = cleaned.toLowerCase();
-            filter.$or = textFields.map(f => exactEqOrArrayClause(f, lc));
+            filter.$or = textFields.map(f => ({
+              $or: [
+                { $expr: { $eq: [ { $toLower: { $trim: { input: `$${f}` } } }, lc ] } },
+                { $expr: {
+                  $in: [ lc, { $map: {
+                    input: { $cond: [ { $isArray: `$${f}` }, `$${f}`, [] ] },
+                    as: "v", in: { $toLower: { $trim: { input: "$$v" } } }
+                  } } ]
+                } }
+              ]
+            }));
           } else {
-            const rx = safeRegExp(cleaned, 'i');
+            const rx = safeRegExp(cleaned, 'i'); // ‘lo.’ and ‘wanderhure’ safe
             filter.$or = textFields.map(f => ({ [f]: rx }));
           }
         }
@@ -281,8 +343,26 @@ async function listBooks(req, res) {
       return res.status(400).json({ error: 'Invalid search parameters', message: e.message || String(e) });
     }
 
-    applyOnlyMarkedGuard(filter, onlyMarked);
+    // 7) Only-marked guard
+    if (onlyMarkedFlag) {
+      const guard = {
+        $or: [
+          { BMarkb: { $exists: true, $type: 'string', $ne: '' } },
+          { barcode: { $exists: true, $type: 'string', $ne: '' } },
+          { BMark:   { $exists: true, $type: 'string', $ne: '' } },
+        ],
+      };
+      if (filter.$or) {
+        const orBlock = filter.$or; delete filter.$or;
+        filter.$and = (filter.$and || []).concat([{ $or: orBlock }, guard]);
+      } else if (filter.$and) {
+        filter.$and.push(guard);
+      } else {
+        Object.assign(filter, guard);
+      }
+    }
 
+    // 8) Query
     const [items, total] = await Promise.all([
       Book.find(filter).sort({ [sortField]: direction, _id: -1 }).skip(skip).limit(lim).lean(),
       Book.countDocuments(filter),
