@@ -15,7 +15,6 @@ function toNumberLoose(x) {
   const n = Number(s);
   return Number.isFinite(n) ? n : NaN;
 }
-
 function toNum(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -23,10 +22,9 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
-
-// Normalize legacy/casing and numeric strings for a plain book object
 function normalizeBook(b) {
   const x = { ...b };
+  // legacy aliases from Atlas imports
   if (x.Bseiten != null && x.BSeiten == null) x.BSeiten = Number(x.Bseiten);
   if (x.Bkw != null && x.BKw == null) x.BKw = x.Bkw;
   if (x.Bverlag != null && x.BVerlag == null) x.BVerlag = x.Bverlag;
@@ -35,22 +33,36 @@ function normalizeBook(b) {
   if (typeof x.BHoehe  === 'string') x.BHoehe  = toNum(x.BHoehe);
   delete x.Bseiten; delete x.Bkw; delete x.Bverlag; delete x.Bw1;
   if (x['BEind*'] != null && x.BEind == null) delete x['BEind*'];
+
+  // guarantee both fields & a convenience virtual for UI
+  if (!x.BMarkb && x.barcode) x.BMarkb = x.barcode;
+  if (!x.barcode && x.BMarkb) x.barcode = x.BMarkb;
+  x.BMark = x.BMarkb || x.barcode || null;
+
   return x;
 }
-
-// AND a "must have BMarkb" guard to the filter if requested
 function applyOnlyMarkedGuard(filter, onlyMarked) {
   if (!onlyMarked) return filter;
-  const guard = { BMarkb: { $exists: true, $type: 'string', $ne: '' } };
+  const guard = {
+    $or: [
+      { BMarkb: { $exists: true, $type: 'string', $ne: '' } },
+      { barcode: { $exists: true, $type: 'string', $ne: '' } },
+    ],
+  };
   if (filter.$or) {
-    const orBlock = filter.$or;
-    delete filter.$or;
+    const orBlock = filter.$or; delete filter.$or;
     filter.$and = (filter.$and || []).concat([{ $or: orBlock }, guard]);
     return filter;
   }
   if (filter.$and) { filter.$and.push(guard); return filter; }
   Object.assign(filter, guard);
   return filter;
+}
+async function countCodeUsage(code) {
+  if (!code) return 0;
+  return Book.countDocuments({
+    $or: [{ BMarkb: code }, { barcode: code }],
+  });
 }
 
 /* ---------- alias + exact helpers ---------- */
@@ -119,7 +131,10 @@ async function listBooks(req, res) {
 
       if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
         const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        filter.BMarkb = new RegExp(`^${escaped}$`, 'i');
+        filter.$or = [
+          { BMarkb: new RegExp(`^${escaped}$`, 'i') },
+          { barcode: new RegExp(`^${escaped}$`, 'i') },
+        ];
       } else if (mRange || mGte || mLte || mEq) {
         const pageFields = ['BSeiten', 'Bseiten'];
         const convInt    = (f) => ({ $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null } });
@@ -174,7 +189,7 @@ async function listBooks(req, res) {
               ]
             }}}})),
           ];
-        } else { // mEq
+        } else {
           const x = Number(cleaned);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: x })),
@@ -221,7 +236,7 @@ async function listBooks(req, res) {
       Book.countDocuments(filter),
     ]);
 
-    const data = items.map((b) => normalizeBook({ ...b, status: getStatus(b) }));
+    const data = items.map(b => normalizeBook({ ...b, status: getStatus(b) }));
     res.json({ data, page: pg, limit: lim, total, pages: Math.ceil(total / lim) });
   } catch (err) {
     console.error('listBooks error:', err);
@@ -233,54 +248,51 @@ async function listBooks(req, res) {
 async function registerBook(req, res) {
   const rawBreite = req.body.BBreite ?? req.body.width ?? req.body.breite;
   const rawHoehe  = req.body.BHoehe  ?? req.body.height ?? req.body.hoehe;
-
   const width  = toNumberLoose(rawBreite);
   const height = toNumberLoose(rawHoehe);
-
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
-    return res.status(400).json({
-      error: 'Invalid dimensions',
-      details: { BBreite: rawBreite, BHoehe: rawHoehe }
-    });
+    return res.status(400).json({ error: 'Invalid dimensions', details: { BBreite: rawBreite, BHoehe: rawHoehe } });
   }
 
   try {
     const { BBreite, BHoehe, ...fields } = req.body;
-    const w = width;
-    const h = height;
+    const w = width, h = height;
 
-    // size → series (prefix)
+    // map size to series
     let prefix;
-    try {
-      prefix = await sizeToPrefixFromDb(w, h);
-    } catch (e) {
-      console.error('sizeToPrefixFromDb failed:', e);
-      return res.status(500).json({ error: 'Size mapping error', message: e.message });
-    }
+    try { prefix = await sizeToPrefixFromDb(w, h); }
+    catch (e) { console.error('sizeToPrefixFromDb failed:', e); return res.status(500).json({ error: 'Size mapping error' }); }
     if (!prefix) {
       console.warn('[registerBook] no prefix for', { w, h });
       return res.status(409).json({ error: 'No matching size rule', width: w, height: h });
     }
 
     const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // reserve barcode
     const now = new Date();
+
+    // conservative: exclude codes referenced by ANY book (your rule prefers fresh codes)
+    const usedCodes = new Set([
+      ...(await Book.distinct('BMarkb', { BMarkb: { $type: 'string', $ne: '' } })),
+      ...(await Book.distinct('barcode', { barcode: { $type: 'string', $ne: '' } })),
+    ]);
+
     let picked = await Barcode.findOneAndUpdate(
       {
         series: new RegExp(`^${esc}$`, 'i'),
+        code: { $nin: Array.from(usedCodes) },
         $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
       },
       { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
       { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
     ).lean();
 
-    // fallback i → ik
+    // optional fallback i → ik (if your rules use that)
     if (!picked && /i$/i.test(prefix)) {
-      const altEsc = `${prefix}k`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const alt = `${prefix}k`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       picked = await Barcode.findOneAndUpdate(
         {
-          series: new RegExp(`^${altEsc}$`, 'i'),
+          series: new RegExp(`^${alt}$`, 'i'),
+          code: { $nin: Array.from(usedCodes) },
           $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
         },
         { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
@@ -293,7 +305,7 @@ async function registerBook(req, res) {
       return res.status(409).json({ error: `No available barcode for series ${prefix}` });
     }
 
-    // normalize flags from form
+    // normalize simple flags
     if (typeof fields.BHVorV === 'string') {
       const val = fields.BHVorV.trim().toUpperCase();
       if (val === 'H' || val === 'V') {
@@ -311,24 +323,23 @@ async function registerBook(req, res) {
       fields.BTopAt = fields.BTop ? new Date() : null;
     }
 
-    // required placeholders to satisfy model
-    const docPayload = {
-      BBreite: w,
-      BHoehe: h,
-      BAutor:  fields.BAutor  ?? 'Unbekannt',
-      BKw:     fields.BKw     ?? 'Allgemein',
-      BKP:     fields.BKP     ?? 0,
-      BVerlag: fields.BVerlag ?? 'Unbekannt',
-      BSeiten: fields.BSeiten ?? 0,
-      ...fields,
-      BMarkb: picked.code,
-      barcode: picked.code,
-    };
+    // fill required/default fields
+    fields.BAutor  = (fields.BAutor  ?? '').toString().trim() || 'Unbekannt';
+    fields.BKw     = (fields.BKw     ?? '').toString().trim() || 'Allgemein';
+    fields.BVerlag = (fields.BVerlag ?? '').toString().trim() || 'Unbekannt';
+    fields.BKP     = Number.isFinite(Number(fields.BKP))     ? Number(fields.BKP)     : 0;
+    fields.BSeiten = Number.isFinite(Number(fields.BSeiten)) ? Number(fields.BSeiten) : 0;
 
     let created;
     try {
-      created = await Book.create(docPayload);
+      created = await Book.create({
+        BBreite: w, BHoehe: h,
+        ...fields,
+        BMarkb: picked.code,
+        barcode: picked.code,
+      });
     } catch (e) {
+      // release reservation on failure
       await Barcode.updateOne(
         { _id: picked._id },
         { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
@@ -336,25 +347,21 @@ async function registerBook(req, res) {
       throw e;
     }
 
-    // backlink
-    await Barcode.updateOne(
-      { _id: picked._id },
-      { $set: { assignedBookId: created._id } }
-    );
+    // optional backlink for convenience (not used for freeing logic)
+    await Barcode.updateOne({ _id: picked._id }, { $set: { assignedBookId: created._id } });
 
-    // ALWAYS include barcode/BMarkb in response
-    const payload = {
+    const payload = normalizeBook({
       _id: created._id,
       BBreite: created.BBreite,
-      BHoehe: created.BHoehe,
+      BHoehe:  created.BHoehe,
       barcode: picked.code,
-      BMarkb: picked.code,
-      BAutor: created.BAutor,
-      BKw: created.BKw,
+      BMarkb:  picked.code,
+      BAutor:  created.BAutor,
+      BKw:     created.BKw,
       BVerlag: created.BVerlag,
       BSeiten: created.BSeiten,
-    };
-    console.log('[registerBook] OK', payload);
+    });
+    console.log('[registerBook] OK', { _id: payload._id, barcode: payload.barcode });
 
     return res.status(201).json(payload);
   } catch (err) {
@@ -398,7 +405,6 @@ async function updateBook(req, res) {
     const updated = await Book.findByIdAndUpdate(id, body, {
       new: true, runValidators: true,
     });
-
     if (!updated) return res.status(404).json({ error: 'Book not found' });
 
     try {
@@ -411,8 +417,7 @@ async function updateBook(req, res) {
       }
     } catch (_) { /* ignore rank errors */ }
 
-    const obj = updated.toObject();
-    res.json({ ...normalizeBook(obj), status: getStatus(updated) });
+    res.json({ ...normalizeBook(updated.toObject()), status: getStatus(updated) });
   } catch (err) {
     console.error('updateBook error:', err);
     res.status(400).json({ error: err.message || 'Bad request' });
@@ -426,17 +431,25 @@ async function deleteBook(req, res) {
     const book = await Book.findById(id);
     if (!book) return res.status(404).json({ error: 'Book not found' });
 
-    const mark = book.BMarkb;
+    const code = book.BMarkb || book.barcode || null;
+
     await Book.findByIdAndDelete(id);
 
-    if (mark) {
-      await Barcode.updateOne(
-        { code: mark },
-        { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
-      );
+    let freed = false;
+    let remaining = 0;
+    if (code) {
+      // your rule: only free when NO books reference it anymore
+      remaining = await countCodeUsage(code);
+      if (remaining === 0) {
+        await Barcode.updateOne(
+          { code },
+          { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
+        );
+        freed = true;
+      }
     }
 
-    res.json({ ok: true, deletedId: id, releasedBMark: mark || null });
+    res.json({ ok: true, deletedId: id, code: code || null, freed, stillReferencedBy: remaining });
   } catch (err) {
     console.error('deleteBook error:', err);
     res.status(500).json({ error: 'Server error' });
