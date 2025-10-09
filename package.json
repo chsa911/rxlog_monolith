@@ -1,8 +1,13 @@
 {
   "name": "rxlog",
   "private": true,
-  "workspaces": ["backend", "frontend"],
-  "devDependencies": { "concurrently": "^9.0.0" },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm:dev --workspace backend\" \"npm:dev --workspace frontend\"",
     "lint": "npm:lint --workspace frontend",

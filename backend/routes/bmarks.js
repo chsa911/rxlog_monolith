@@ -1,24 +1,31 @@
 const express = require('express');
-const {
-  previewBMark,
-  previewBySize,
-  prefixBySize,
-  diagBySize,
-  registerBook,
-  releaseBMark,
-} = require('../controllers/bmarksController');
-
-
 const router = express.Router();
 
+// Be explicit about the path & file name:
+let ctrl;
+try {
+  ctrl = require('../controllers/bmarksController'); // ../controllers/bmarksController.js
+} catch (e) {
+  console.error('[bmarks routes] failed to require controller:', e);
+  ctrl = {};
+}
 
-router.get('/preview', previewBMark);
+// Log available exports once on boot
+console.log('[bmarks routes] exports:', Object.keys(ctrl));
+
+// Fallback no-op handler to avoid "Route.get() requires a callback" crash
+const notImplemented = (name) => (req, res) => {
+  res.status(500).json({ error: `bmarksController.${name} is undefined` });
+};
+
+// Bind routes safely
+const previewBySize = ctrl.previewBySize || notImplemented('previewBySize');
+const preview       = ctrl.preview       || notImplemented('preview');
+const release       = ctrl.release       || notImplemented('release');
+
+// Routes
 router.get('/preview-by-size', previewBySize);
-router.get('/prefix-by-size', prefixBySize);
-router.get('/diag', diagBySize);
-
-// optional stubs — remove if you use /api/books/register instead
-router.post('/register', registerBook);
-router.patch('/:id/release', releaseBMark);
+router.get('/preview', preview);
+router.patch('/:id/release', release);
 
 module.exports = router;

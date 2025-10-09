@@ -1,5 +1,6 @@
+// backend/controllers/booksController.js
 const Book = require('../models/Book');
-const BMarkf = require('../models/BMarkf');
+const Barcode = require('../models/Barcode');
 const { getStatus, computeRank } = require('../utils/status');
 const { sizeToPrefixFromDb } = require('../utils/sizeToPrefixFromDb');
 
@@ -7,6 +8,14 @@ const MS_7_DAYS = 7 * 24 * 60 * 60 * 1000;
 const sevenDaysFromNow = () => new Date(Date.now() + MS_7_DAYS);
 
 /* ------------------------- helpers ------------------------- */
+function toNumberLoose(x) {
+  if (typeof x === 'number') return x;
+  if (typeof x !== 'string') return NaN;
+  const s = x.trim().replace(/\s+/g, '').replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 function toNum(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -18,92 +27,60 @@ function toNum(v) {
 // Normalize legacy/casing and numeric strings for a plain book object
 function normalizeBook(b) {
   const x = { ...b };
-
-  // Fix common legacy/casing variants
   if (x.Bseiten != null && x.BSeiten == null) x.BSeiten = Number(x.Bseiten);
   if (x.Bkw != null && x.BKw == null) x.BKw = x.Bkw;
   if (x.Bverlag != null && x.BVerlag == null) x.BVerlag = x.Bverlag;
   if (x.Bw1 != null && x.BKw1 == null) x.BKw1 = x.Bw1;
-
-  // Convert numeric strings with commas to numbers
   if (typeof x.BBreite === 'string') x.BBreite = toNum(x.BBreite);
   if (typeof x.BHoehe  === 'string') x.BHoehe  = toNum(x.BHoehe);
-
-  // Drop legacy keys for a clean, canonical shape
-  delete x.Bseiten;
-  delete x.Bkw;
-  delete x.Bverlag;
-  delete x.Bw1;
-
-  // Ignore oddball BEind* if present (keep BEind if it exists)
+  delete x.Bseiten; delete x.Bkw; delete x.Bverlag; delete x.Bw1;
   if (x['BEind*'] != null && x.BEind == null) delete x['BEind*'];
-
   return x;
 }
 
 // AND a "must have BMarkb" guard to the filter if requested
 function applyOnlyMarkedGuard(filter, onlyMarked) {
   if (!onlyMarked) return filter;
-
   const guard = { BMarkb: { $exists: true, $type: 'string', $ne: '' } };
-
   if (filter.$or) {
     const orBlock = filter.$or;
     delete filter.$or;
     filter.$and = (filter.$and || []).concat([{ $or: orBlock }, guard]);
     return filter;
   }
-  if (filter.$and) {
-    filter.$and.push(guard);
-    return filter;
-  }
+  if (filter.$and) { filter.$and.push(guard); return filter; }
   Object.assign(filter, guard);
   return filter;
 }
 
-/* ---------- NEW: alias + exact helpers (place right here) ---------- */
-
-// Legacy/alias expansion so Atlas-imported fields are also checked
+/* ---------- alias + exact helpers ---------- */
 const FIELD_ALIASES = {
   BTitel:   ['BTitel', 'Titel', 'title'],
   BAutor:   ['BAutor', 'Autor', 'author'],
   BVerlag:  ['BVerlag', 'Bverlag', 'Verlag', 'publisher'],
   BKw:      ['BKw', 'Bkw', 'keyword', 'keywords'],
-  BMarkb:   ['BMarkb', 'BMark', 'mark'],
+  BMarkb:   ['BMarkb', 'BMark', 'mark', 'barcode'],
 };
-
-// Expand a list of canonical field names to include their aliases
 function expandFieldAliases(keys) {
   const set = new Set();
   const source = (keys && keys.length) ? keys : Object.keys(FIELD_ALIASES);
-  for (const k of source) {
-    const al = FIELD_ALIASES[k] || [k];
-    al.forEach(a => set.add(a));
-  }
+  for (const k of source) (FIELD_ALIASES[k] || [k]).forEach(a => set.add(a));
   return Array.from(set);
 }
-
-// Build an $or clause for EXACT (case-insensitive, trimmed) on strings OR arrays
 function exactEqOrArrayClause(field, lcValue) {
   return {
     $or: [
-      // string: trim+lowercase equality
       { $expr: { $eq: [ { $toLower: { $trim: { input: `$${field}` } } }, lcValue ] } },
-      // array: any element after trim+lowercase equals lcValue
-      {
-        $expr: {
-          $in: [
-            lcValue,
-            {
-              $map: {
-                input: { $cond: [ { $isArray: `$${field}` }, `$${field}`, [] ] },
-                as: "v",
-                in: { $toLower: { $trim: { input: "$$v" } } }
-              }
-            }
-          ]
-        }
-      }
+      { $expr: {
+        $in: [
+          lcValue,
+          { $map: {
+            input: { $cond: [ { $isArray: `$${field}` }, `$${field}`, [] ] },
+            as: "v",
+            in: { $toLower: { $trim: { input: "$$v" } } }
+          } }
+        ]
+      } }
     ]
   };
 }
@@ -112,14 +89,8 @@ function exactEqOrArrayClause(field, lcValue) {
 async function listBooks(req, res) {
   try {
     const {
-      q,
-      page = 1,
-      limit = 20,
-      sort,
-      sortBy,
-      order = 'desc',
-      createdFrom,
-      createdTo,
+      q, page = 1, limit = 20, sort, sortBy, order = 'desc',
+      createdFrom, createdTo,
     } = req.query;
 
     const onlyMarked = ['1','true','yes','on'].includes(String(req.query.onlyMarked || '').toLowerCase());
@@ -127,8 +98,7 @@ async function listBooks(req, res) {
 
     const ALLOWED_TEXT_FIELDS = ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
     const fieldsFromQuery = String(req.query.fields || '')
-      .split(',')
-      .map(s => s.trim())
+      .split(',').map(s => s.trim())
       .filter(s => ALLOWED_TEXT_FIELDS.includes(s));
 
     const pg = Math.max(1, parseInt(page, 10) || 1);
@@ -141,28 +111,23 @@ async function listBooks(req, res) {
 
     if (q) {
       const cleaned = String(q).trim();
-
       const looksLikeBMark = /^[a-z]+[0-9]{2,}$/i.test(cleaned);
       const mRange = cleaned.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
       const mGte  = cleaned.match(/^(?:>=\s*|)(\d+)\s*\+$/) || cleaned.match(/^>=\s*(\d+)$/);
       const mLte  = cleaned.match(/^<=\s*(\d+)$/) || cleaned.match(/^(\d+)\s*-[ ]*$/);
       const mEq   = cleaned.match(/^\d+$/);
 
-      // FORCE exact BMark match if the query looks like a mark OR fields include BMarkb
       if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
         const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         filter.BMarkb = new RegExp(`^${escaped}$`, 'i');
-      }
-      // Numeric/range pages on BSeiten (support legacy 'Bseiten' too)
-      else if (mRange || mGte || mLte || mEq) {
+      } else if (mRange || mGte || mLte || mEq) {
         const pageFields = ['BSeiten', 'Bseiten'];
         const convInt    = (f) => ({ $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null } });
         const toText     = (f) => ({ $toString: `$${f}` });
         const matchRange = (f) => ({ $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ } });
 
         if (mRange) {
-          const lo = Number(mRange[1]);
-          const hi = Number(mRange[2]);
+          const lo = Number(mRange[1]), hi = Number(mRange[2]);
           filter.$or = [
             ...pageFields.map(f => ({ [f]: { $gte: lo, $lte: hi } })),
             ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
@@ -229,37 +194,26 @@ async function listBooks(req, res) {
             }})),
           ];
         }
-      }
-      // ----- TEXT search (non-numeric and not forced BMark) -----
-      else {
+      } else {
         const _requested = fieldsFromQuery.length
-          ? fieldsFromQuery
-          : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
-        // expand to include Atlas aliases (Bverlag, Verlag, publisher, etc.)
+          ? fieldsFromQuery : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
         const textFields = expandFieldAliases(_requested);
-
-        // Exact if requested OR fields are scoped → exact literal match (case-insensitive, trimmed), supports arrays
         const exactRequested = exactFlag || fieldsFromQuery.length > 0;
 
         if (exactRequested) {
           const lc = cleaned.toLowerCase();
-          // build $or across all aliases; each alias supports string or array values
           filter.$or = textFields.map(f => exactEqOrArrayClause(f, lc));
         } else {
-          // "contains" fallback (regex), include aliases
           const rx = new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
           filter.$or = textFields.map(f => ({ [f]: rx }));
         }
       }
-    } else {
-      if (createdFrom || createdTo) {
-        filter.BEind = {};
-        if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
-        if (createdTo)   filter.BEind.$lt  = new Date(createdTo   + 'T23:59:59.999Z');
-      }
+    } else if (createdFrom || createdTo) {
+      filter.BEind = {};
+      if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
+      if (createdTo)   filter.BEind.$lt  = new Date(createdTo   + 'T23:59:59.999Z');
     }
 
-    // Apply "only with BMark"
     applyOnlyMarkedGuard(filter, onlyMarked);
 
     const [items, total] = await Promise.all([
@@ -277,36 +231,69 @@ async function listBooks(req, res) {
 
 /* ========================= REGISTER (POST /api/books/register) ========================= */
 async function registerBook(req, res) {
+  const rawBreite = req.body.BBreite ?? req.body.width ?? req.body.breite;
+  const rawHoehe  = req.body.BHoehe  ?? req.body.height ?? req.body.hoehe;
+
+  const width  = toNumberLoose(rawBreite);
+  const height = toNumberLoose(rawHoehe);
+
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return res.status(400).json({
+      error: 'Invalid dimensions',
+      details: { BBreite: rawBreite, BHoehe: rawHoehe }
+    });
+  }
+
   try {
     const { BBreite, BHoehe, ...fields } = req.body;
-    const w = toNum(BBreite);
-    const h = toNum(BHoehe);
-    if (w === null || h === null) {
-      return res.status(400).json({ error: 'BBreite and BHoehe (cm) are required' });
+    const w = width;
+    const h = height;
+
+    // size → series (prefix)
+    let prefix;
+    try {
+      prefix = await sizeToPrefixFromDb(w, h);
+    } catch (e) {
+      console.error('sizeToPrefixFromDb failed:', e);
+      return res.status(500).json({ error: 'Size mapping error', message: e.message });
+    }
+    if (!prefix) {
+      console.warn('[registerBook] no prefix for', { w, h });
+      return res.status(409).json({ error: 'No matching size rule', width: w, height: h });
     }
 
-    let prefix = await sizeToPrefixFromDb(w, h);
-    if (!prefix) return res.status(400).json({ error: 'No matching size rule' });
+    const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // pick a free BMark: exact prefix, fallback i->ik
-    let picked = await BMarkf.findOneAndDelete(
-      { BMark: new RegExp(`^${prefix}`, 'i') },
-      { sort: { BMark: 1, rank: 1 } }
+    // reserve barcode
+    const now = new Date();
+    let picked = await Barcode.findOneAndUpdate(
+      {
+        series: new RegExp(`^${esc}$`, 'i'),
+        $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
+      },
+      { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
+      { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
     ).lean();
 
+    // fallback i → ik
     if (!picked && /i$/i.test(prefix)) {
-      const alt = `${prefix}k`;
-      picked = await BMarkf.findOneAndDelete(
-        { BMark: new RegExp(`^${alt}`, 'i') },
-        { sort: { BMark: 1, rank: 1 } }
+      const altEsc = `${prefix}k`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      picked = await Barcode.findOneAndUpdate(
+        {
+          series: new RegExp(`^${altEsc}$`, 'i'),
+          $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
+        },
+        { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
+        { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
       ).lean();
     }
 
     if (!picked) {
-      return res.status(409).json({ error: `No free BMark for prefix ${prefix}` });
+      console.warn('[registerBook] no available barcode for series', prefix);
+      return res.status(409).json({ error: `No available barcode for series ${prefix}` });
     }
 
-    // Normalizations from form
+    // normalize flags from form
     if (typeof fields.BHVorV === 'string') {
       const val = fields.BHVorV.trim().toUpperCase();
       if (val === 'H' || val === 'V') {
@@ -319,20 +306,57 @@ async function registerBook(req, res) {
         return res.status(400).json({ error: 'BHVorV must be H or V' });
       }
     }
-
     if (typeof fields.BTop !== 'undefined') {
       fields.BTop = !!fields.BTop;
       fields.BTopAt = fields.BTop ? new Date() : null;
     }
 
-    const doc = await Book.create({
+    // required placeholders to satisfy model
+    const docPayload = {
       BBreite: w,
       BHoehe: h,
+      BAutor:  fields.BAutor  ?? 'Unbekannt',
+      BKw:     fields.BKw     ?? 'Allgemein',
+      BKP:     fields.BKP     ?? 0,
+      BVerlag: fields.BVerlag ?? 'Unbekannt',
+      BSeiten: fields.BSeiten ?? 0,
       ...fields,
-      BMarkb: picked.BMark,
-    });
+      BMarkb: picked.code,
+      barcode: picked.code,
+    };
 
-    res.status(201).json({ ...normalizeBook(doc.toObject()), status: getStatus(doc) });
+    let created;
+    try {
+      created = await Book.create(docPayload);
+    } catch (e) {
+      await Barcode.updateOne(
+        { _id: picked._id },
+        { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
+      );
+      throw e;
+    }
+
+    // backlink
+    await Barcode.updateOne(
+      { _id: picked._id },
+      { $set: { assignedBookId: created._id } }
+    );
+
+    // ALWAYS include barcode/BMarkb in response
+    const payload = {
+      _id: created._id,
+      BBreite: created.BBreite,
+      BHoehe: created.BHoehe,
+      barcode: picked.code,
+      BMarkb: picked.code,
+      BAutor: created.BAutor,
+      BKw: created.BKw,
+      BVerlag: created.BVerlag,
+      BSeiten: created.BSeiten,
+    };
+    console.log('[registerBook] OK', payload);
+
+    return res.status(201).json(payload);
   } catch (err) {
     console.error('registerBook error:', err);
     res.status(500).json({ error: err.message || 'Server error' });
@@ -406,10 +430,9 @@ async function deleteBook(req, res) {
     await Book.findByIdAndDelete(id);
 
     if (mark) {
-      await BMarkf.updateOne(
-        { BMark: mark },
-        { $setOnInsert: { BMark: mark, rank: 9999 } },
-        { upsert: true }
+      await Barcode.updateOne(
+        { code: mark },
+        { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
       );
     }
 

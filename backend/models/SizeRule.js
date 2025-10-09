@@ -1,21 +1,32 @@
-// models/SizeRule.js
+// backend/models/SizeRule.js
 const { Schema, model, models } = require('mongoose');
 
-const bandSchema = new Schema({
-  hMin:   { type: Number, default: null },
-  hMax:   { type: Number, default: null },
-  equals: { type: [Number], default: [] },
-  prefix: { type: String, required: true },
-}, { _id: false });
+const BandSchema = new Schema(
+  {
+    condition: { type: String, enum: ['lt', 'gt', 'eq'], required: true },
+    value: { type: Number, default: null },   // for lt/gt
+    values: { type: [Number], default: [] },  // for eq
+    prefix: { type: String, required: true }, // e.g., "egk"
+  },
+  { _id: false }
+);
 
-const sizeRuleSchema = new Schema({
-  wMin:     { type: Number, default: null },
-  wMax:     { type: Number, required: true },
-  priority: { type: Number, default: 0, index: true },
-  bands:    { type: [bandSchema], default: [] },
-}, { timestamps: true });
+const SizeRuleSchema = new Schema(
+  {
+    // Width band (Breite)
+    minB: { type: Number, default: null },      // inclusive by default
+    minBInc: { type: Boolean, default: true },  // if provided
+    maxB: { type: Number, default: null },
+    maxBInc: { type: Boolean, default: true },
 
-sizeRuleSchema.index({ wMax: 1, wMin: 1, priority: 1 });
+    // Height bands within this width band
+    bands: { type: [BandSchema], default: [] },
+  },
+  {
+    collection: 'sizeRules',
+    strict: false,
+    timestamps: false,
+  }
+);
 
-// 👇 Guarded export prevents OverwriteModelError
-module.exports = models.SizeRule || model('SizeRule', sizeRuleSchema);
+module.exports = models.SizeRule || model('SizeRule', SizeRuleSchema);

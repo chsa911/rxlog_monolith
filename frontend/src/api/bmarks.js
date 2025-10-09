@@ -1,35 +1,41 @@
 // frontend/src/api/bmarks.js
 import { API_BASE } from "./config";
 
-const BMARKS_BASE = `${API_BASE}/api/bmarks`;
-const BOOKS_BASE  = `${API_BASE}/api/books`;
-
-/** Preview a BMark by prefix (GET /api/bmarks/preview?prefix=...) */
-export async function previewBMark(prefix) {
-  const url = new URL(`${BMARKS_BASE}/preview`, window.location.origin);
-  if (prefix != null) url.searchParams.set("prefix", String(prefix));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/** Preview by size (GET /api/bmarks/preview-by-size?BBreite=&BHoehe=) */
+/** Preview first available barcode for width/height.
+ * Returns: { firstCode, prefix, available }
+ */
 export async function previewBySize(BBreite, BHoehe) {
-  const url = new URL(`${BMARKS_BASE}/preview-by-size`, window.location.origin);
-  if (BBreite != null) url.searchParams.set("BBreite", String(BBreite));
-  if (BHoehe  != null) url.searchParams.set("BHoehe",  String(BHoehe));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { _id, BMark, rank } | null
-}
+  // Build the base ("" in dev so Vite proxy handles /api)
+  const base = (API_BASE && API_BASE.trim()) || "";
 
-/** Register a book (POST /api/books/register) */
-export async function registerBook(payload) {
-  const res = await fetch(`${BOOKS_BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+  // Build query string safely
+  const qs = new URLSearchParams({
+    BBreite: String(BBreite).replace(",", "."),
+    BHoehe:  String(BHoehe).replace(",", "."),
+  }).toString();
+
+  // When base === "", this is just "/api/…", which fetch() accepts
+  const url = `${base}/api/bmarks/preview-by-size?${qs}`;
+
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+
+  let data = {};
+  try { data = await res.json(); } catch {}
+
+  if (!res.ok) {
+    const msg = data?.error || data?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const items = Array.isArray(data.items) ? data.items : [];
+  const first = items[0];
+
+  return {
+    firstCode: first?.BMark || null,
+    prefix: data?.prefix ?? null,
+    available: typeof data?.available === "number" ? data.available : items.length,
+  };
 }

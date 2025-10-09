@@ -1,194 +1,129 @@
-import { useState, useEffect } from "react";
-import { previewBySize, registerBook } from "../api/bmarks"; // ✅ use size-based preview
-import { autocomplete } from "../api/books";
-import { useAppContext } from "../context/AppContext";
+import { useEffect, useState } from "react";
+import { previewBySize } from "../api/bmarks";        // <- must be named export from src/api/bmarks.js
+import { registerBook } from "../api/books";
 
-export default function RegistrationForm({ onRegistered }) {
-  const { refreshBooks } = useAppContext();
+export default function RegistrationForm() {
+  console.log("[RegistrationForm] mounted");
 
-  const [form, setForm] = useState({
-    BBreite: "",
-    BHoehe: "",
-    BAutor: "",
-    BKw: "",
-    BKP: 1,
-    BKw1: "",
-    BK1P: "",
-    BKw2: "",
-    BK2P: "",
-    BVerlag: "",
-    BSeiten: "",
-    BTop: false,
-  });
-
-  const [suggestedMark, setSuggestedMark] = useState(null);
+  const [BBreite, setBBreite] = useState("");
+  const [BHoehe,  setBHoehe]  = useState("");
+  const [preview, setPreview] = useState({ firstCode: null, prefix: null, available: 0 });
   const [busy, setBusy] = useState(false);
-  const [suggestions, setSuggestions] = useState({
-    BAutor: [],
-    BKw: [],
-    BKw1: [],
-    BKw2: [],
-    BVerlag: [],
-  });
+  const [last, setLast] = useState(null);
 
-  // 🔄 Live preview using backend size rules
   useEffect(() => {
-    const w = form.BBreite?.toString().trim();
-    const h = form.BHoehe?.toString().trim();
-    if (!w || !h) { setSuggestedMark(null); return; }
+    const w0 = String(BBreite || "").trim();
+    const h0 = String(BHoehe  || "").trim();
+    console.log("[preview] effect", { w0, h0 });
 
+    if (!w0 || !h0) {
+      console.log("[preview] missing inputs → no call");
+      setPreview({ firstCode: null, prefix: null, available: 0 });
+      return;
+    }
+
+    const w = w0.replace(",", ".");
+    const h = h0.replace(",", ".");
     let cancelled = false;
+
     (async () => {
       try {
-        const m = await previewBySize(w, h); // { _id, BMark, rank } | null
-        if (!cancelled) setSuggestedMark(m?.BMark || null);
-      } catch {
-        if (!cancelled) setSuggestedMark(null);
+        console.log("[preview] calling fetch…", { w, h });
+        const info = await previewBySize(w, h); // { firstCode, prefix, available }
+        if (!cancelled) {
+          console.log("[preview] response", info);
+          setPreview(info);
+        }
+      } catch (e) {
+        console.warn("[preview] failed", e);
+        if (!cancelled) setPreview({ firstCode: null, prefix: null, available: 0 });
       }
     })();
 
     return () => { cancelled = true; };
-  }, [form.BBreite, form.BHoehe]);
-
-  async function handleAutocomplete(field, value) {
-    setForm((f) => ({ ...f, [field]: value }));
-
-    const backendField = field === "BKw1" || field === "BKw2" ? "BKw" : field;
-    if (value && value.length > 1) {
-      try {
-        const vals = await autocomplete(backendField, value);
-        setSuggestions((s) => ({ ...s, [field]: vals }));
-      } catch { /* ignore */ }
-    }
-  }
-
-  function setField(name) {
-    return (e) =>
-      setForm((f) => ({
-        ...f,
-        [name]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
-      }));
-  }
-
-  async function onSubmit(e) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const payload = {
-        ...form,
-        BBreite: Number(String(form.BBreite).replace(",", ".")),
-        BHoehe: Number(String(form.BHoehe).replace(",", ".")),
-        BKP: Number(form.BKP || 0),
-        BK1P: form.BK1P !== "" ? Number(form.BK1P) : null,
-        BK2P: form.BK2P !== "" ? Number(form.BK2P) : null,
-        BSeiten: Number(form.BSeiten),
-      };
-
-      const saved = await registerBook(payload);
-      refreshBooks?.();
-      onRegistered && onRegistered(saved);
-
-      setForm({
-        BBreite: "",
-        BHoehe: "",
-        BAutor: "",
-        BKw: "",
-        BKP: 1,
-        BKw1: "",
-        BK1P: "",
-        BKw2: "",
-        BK2P: "",
-        BVerlag: "",
-        BSeiten: "",
-        BTop: false,
-      });
-      setSuggestedMark(null);
-    } catch (err) {
-      alert(typeof err === "string" ? err : err?.message || "Fehler beim Speichern");
-    } finally {
-      setBusy(false);
-    }
-  }
+  }, [BBreite, BHoehe]);
 
   return (
-    <form className="p-4 border rounded space-y-3" onSubmit={onSubmit}>
-      <h2 className="text-xl font-bold">Register Book</h2>
+    <div className="p-4 border rounded space-y-3">
+      <h2 className="text-xl font-bold">DEBUG: RegistrationForm (Minimal)</h2>
 
       <div className="grid gap-2 md:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span>Breite (BBreite)</span>
-          <input type="number" required value={form.BBreite} onChange={setField("BBreite")} className="border p-2 rounded" step="0.1" />
+          <input
+            type="number"
+            step="0.1"
+            value={BBreite}
+            onChange={(e) => setBBreite(e.target.value)}
+            className="border p-2 rounded"
+          />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Höhe (BHoehe)</span>
-          <input type="number" required value={form.BHoehe} onChange={setField("BHoehe")} className="border p-2 rounded" step="0.1" />
+          <input
+            type="number"
+            step="0.1"
+            value={BHoehe}
+            onChange={(e) => setBHoehe(e.target.value)}
+            className="border p-2 rounded"
+          />
         </label>
 
-        <label className="flex flex-col gap-1">
-          <span>Autor (BAutor)</span>
-          <input list="autor-list" required value={form.BAutor} onChange={(e) => handleAutocomplete("BAutor", e.target.value)} className="border p-2 rounded" />
-          <datalist id="autor-list">{suggestions.BAutor.map((v) => <option key={v} value={v} />)}</datalist>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Stichwort (BKw)</span>
-          <input list="kw-list" required maxLength={25} value={form.BKw} onChange={(e) => handleAutocomplete("BKw", e.target.value)} className="border p-2 rounded" />
-          <datalist id="kw-list">{suggestions.BKw.map((v) => <option key={v} value={v} />)}</datalist>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Position Stichwort (BKP)</span>
-          <input type="number" required max={99} value={form.BKP} onChange={setField("BKP")} className="border p-2 rounded" />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Verlag (BVerlag)</span>
-          <input list="verlag-list" required maxLength={25} value={form.BVerlag} onChange={(e) => handleAutocomplete("BVerlag", e.target.value)} className="border p-2 rounded" />
-          <datalist id="verlag-list">{suggestions.BVerlag.map((v) => <option key={v} value={v} />)}</datalist>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Seiten (BSeiten)</span>
-          <input type="number" required max={9999} value={form.BSeiten} onChange={setField("BSeiten")} className="border p-2 rounded" />
-        </label>
-
-        {/* 2./3. Stichwort optional */}
-        <label className="flex flex-col gap-1">
-          <span>2. Stichwort (BKw1)</span>
-          <input list="kw1-list" maxLength={25} value={form.BKw1} onChange={(e) => handleAutocomplete("BKw1", e.target.value)} className="border p-2 rounded" placeholder="optional" />
-          <datalist id="kw1-list">{suggestions.BKw1.map((v) => <option key={v} value={v} />)}</datalist>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Position 2. Stichwort (BK1P)</span>
-          <input type="number" max={99} value={form.BK1P} onChange={setField("BK1P")} className="border p-2 rounded" placeholder="optional" />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>3. Stichwort (BKw2)</span>
-          <input list="kw2-list" maxLength={25} value={form.BKw2} onChange={(e) => handleAutocomplete("BKw2", e.target.value)} className="border p-2 rounded" placeholder="optional" />
-          <datalist id="kw2-list">{suggestions.BKw2.map((v) => <option key={v} value={v} />)}</datalist>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span>Position 3. Stichwort (BK2P)</span>
-          <input type="number" max={99} value={form.BK2P} onChange={setField("BK2P")} className="border p-2 rounded" placeholder="optional" />
-        </label>
-
-        <label className="flex items-center gap-2 mt-1 md:col-span-2">
-          <input type="checkbox" checked={form.BTop} onChange={setField("BTop")} />
-          <span>Top-Titel (BTop)</span>
-        </label>
+        <div className="flex flex-col gap-1 md:col-span-2">
+          <span>Barcode (Vorschau)</span>
+          <div
+            className={`p-3 rounded text-lg font-semibold border text-center select-none ${
+              preview.firstCode
+                ? "bg-green-100 text-green-800 border-green-400"
+                : "bg-red-50 text-red-600 border-red-300"
+            }`}
+          >
+            {preview.firstCode || "— kein Barcode verfügbar —"}
+          </div>
+          <div className="text-xs text-gray-500">
+            Serie: <strong>{preview.prefix ?? "—"}</strong> · frei:{" "}
+            <strong>{preview.available ?? 0}</strong>
+          </div>
+        </div>
       </div>
 
-      <div className="text-sm">
-        Vorschlag BMark: <strong>{suggestedMark ?? "—"}</strong>
-      </div>
-
-      <button disabled={busy} type="submit" className="bg-blue-600 text-white px-4 py-2 rounded">
-        {busy ? "Speichern…" : "Speichern"}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          // optional: prove POST works too
+          setBusy(true);
+          try {
+            const payload = {
+              BBreite: Number(String(BBreite).replace(",", ".")),
+              BHoehe:  Number(String(BHoehe).replace(",", ".")),
+              BAutor: "Unbekannt",
+              BKw: "Allgemein",
+              BKP: 0,
+              BVerlag: "Unbekannt",
+              BSeiten: 0,
+            };
+            const res = await registerBook(payload);
+            console.log("[register] response", res);
+            setLast(res?.barcode || res?.BMarkb || null);
+          } catch (e) {
+            console.warn("[register] failed", e);
+            alert(e?.message || "register failed");
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="bg-blue-600 text-white px-4 py-2 rounded"
+      >
+        {busy ? "Speichern…" : "Speichern (Debug)"}
       </button>
-    </form>
+
+      {last && (
+        <div className="text-sm mt-2 bg-green-50 text-green-700 border border-green-300 p-2 rounded">
+          Zugewiesener Barcode: <strong>{last}</strong>
+        </div>
+      )}
+    </div>
   );
 }

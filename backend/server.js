@@ -1,35 +1,40 @@
 // backend/server.js
-require('dotenv').config();
+// backend/server.js
+require('dotenv').config({ path: '../.env' });  // look one level up (project root)
 const mongoose = require('mongoose');
-const express = require('express');
-
 const app = require('./app');
-const { start } = require('./jobs/releaseMarks');
 
 const PORT = Number(process.env.PORT || 4000);
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bmarkdb';
 
-app.use(express.json());
+// optional daily job — guard in case the file is missing during refactor
+let startReleaseJob = null;
+try {
+  ({ start: startReleaseJob } = require('./jobs/releaseMarks'));
+} catch (_) {
+  // ignore if the job module doesn't exist yet
+}
 
-app.use('/api/bmarks', require('./routes/bmarks'));
-app.use('/api/books', require('./routes/books'));
-
-mongoose.connect(MONGO_URI)
-  .then(() => {
+(async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
     console.log('✅ MongoDB connected');
-    // start daily release job
-    start();
-    app.listen(PORT, () =>
-      console.log(`🚀 API listening on http://localhost:${PORT}`)
-    );
-  })
-  .catch(err => {
+
+    if (typeof startReleaseJob === 'function') {
+      startReleaseJob();
+    }
+
+    app.listen(PORT, () => {
+      console.log(`🚀 API listening on http://localhost:${PORT}`);
+    });
+  } catch (err) {
     console.error('❌ Mongo connection error:', err);
     process.exit(1);
-  });
+  }
+})();
 
 process.on('SIGINT', async () => {
   console.log('\n👋 Shutting down...');
-  await mongoose.disconnect();
+  try { await mongoose.disconnect(); } catch (_) {}
   process.exit(0);
 });

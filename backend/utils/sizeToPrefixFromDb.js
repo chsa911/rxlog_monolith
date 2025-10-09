@@ -1,131 +1,66 @@
-// backend/utils/sizeToPrefixFromDb.js
-const mongoose = require('mongoose');
+const SizeRule = require('../models/SizeRule');
 
-function toNum(v) {
-  if (v == null) return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  const s = String(v).trim().replace(',', '.');
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : null;
+function toNum(x) {
+  if (typeof x === 'number') return x;
+  const n = Number(String(x ?? '').trim().replace(',', '.'));
+  return Number.isFinite(n) ? n : NaN;
 }
-const round1 = x => Math.round(x * 10) / 10;
 
-/**
- * Supports BOTH schemas in 'sizerules' collection:
- * A) { wMin, wMax, priority, bands:[{hMin,hMax,equals,prefix}] }
- * B) { minB, maxB, maxBInc, bands:[{condition:'lt'|'eq'|'gt', value, values, prefix}] }
- */
-exports.sizeToPrefixFromDb = async function sizeToPrefixFromDb(BBreite, BHoehe) {
-  let w = toNum(BBreite);
-  let h = toNum(BHoehe);
-  if (w == null || h == null) return null;
+const round1 = (x) => Math.round(x * 10) / 10;
 
-  // tolerate mm → cm
-  if (w > 50) w /= 10;
-  if (h > 50) h /= 10;
+function widthInRange(w, r) {
+  const { minB = null, maxB = null, minBInc = true, maxBInc = true } = r;
+  if (minB != null && (minBInc ? w < minB : w <= minB)) return false;
+  if (maxB != null && (maxBInc ? w > maxB : w >= maxB)) return false;
+  return true;
+}
 
-  w = round1(w);
-  h = round1(h);
+function matchBand(h, b, tol = 0.2) {
+  if (!b) return false;
+  const { condition, value = null, values = [] } = b;
+  if (condition === 'lt' && value != null) return h < value + tol;
+  if (condition === 'gt' && value != null) return h > value - tol;
+  if (condition === 'eq') return values.some(v => Math.abs(h - v) <= tol);
+  return false;
+}
 
-  const col = mongoose.connection.db.collection('sizerules');
+/** Find series prefix for given width/height in cm. */
+async function sizeToPrefixFromDb(widthCm, heightCm) {
+  const tol = Number(process.env.TOL_CM || 0.2);
+  const w = round1(toNum(widthCm));
+  const h = round1(toNum(heightCm));
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
 
-  const rawRules = await col.find(
-    {},
-    { projection: { wMin: 1, wMax: 1, priority: 1, bands: 1, minB: 1, maxB: 1, maxBInc: 1 } }
-  ).toArray();
+  const rules = await SizeRule.find({}).lean();
+  const matches = rules.filter(r => widthInRange(w, r)).sort(
+    (a, b) =>
+      ((a.maxB ?? Infinity) - (a.minB ?? -Infinity)) -
+      ((b.maxB ?? Infinity) - (b.minB ?? -Infinity))
+  );
 
-  // Normalize into unified rules with explicit inclusivity
-  // width: [wMinInc=true] and [wMaxInc = schemaB.maxBInc or true]
-  // height bands:
-  //   - equals: exact values
-  //   - lt v  → hMax=v with hMaxInc=true  (≤ v)
-  //   - gt v  → hMin=v with hMinInc=false (≥ v)  ← we’ll treat ≥ by using false and compare h > v OR equals handled before
-  const norms = rawRules.map(r => {
-    const useA = (r.wMax != null || r.wMin != null);
-    const useB = (r.minB != null || r.maxB != null);
+  for (const rule of matches) {
+    // eq first (more specific)
+    const eqs = rule.bands?.filter(b => b.condition === 'eq') || [];
+    const others = rule.bands?.filter(b => b.condition !== 'eq') || [];
 
-    const wMin = useA ? (r.wMin ?? null) : (useB ? (r.minB ?? null) : null);
-    const wMax = useA ? (r.wMax ?? null) : (useB ? (r.maxB ?? null) : null);
-    const wMinInc = true; // inclusive lower bound to avoid holes at min
-    const wMaxInc = useA ? true : (useB ? (r.maxBInc !== false) : true);
-    const priority = r.priority ?? 0;
-
-    let bands = [];
-    if (useA) {
-      bands = (r.bands || []).map(b => ({
-        hMin: b.hMin ?? null,
-        hMax: b.hMax ?? null,
-        hMinInc: b.hMin != null, // default inclusive if provided
-        hMaxInc: false,          // default exclusive upper unless explicitly set in A (not used)
-        equals: Array.isArray(b.equals) ? b.equals.map(toNum).filter(x => x != null).map(round1) : [],
-        prefix: b.prefix
-      }));
-    } else if (useB) {
-      bands = (r.bands || []).flatMap(b => {
-        if (b.condition === 'eq' && Array.isArray(b.values)) {
-          return [{
-            hMin: null, hMax: null, hMinInc: false, hMaxInc: false,
-            equals: b.values.map(toNum).filter(x => x != null).map(round1),
-            prefix: b.prefix
-          }];
-        }
-        if (b.condition === 'lt') {
-          const v = toNum(b.value);
-          if (v == null) return [];
-          return [{
-            hMin: null, hMax: v, hMinInc: false, hMaxInc: true,  // ≤ v  (INCLUSIVE!)
-            equals: [], prefix: b.prefix
-          }];
-        }
-        if (b.condition === 'gt') {
-          const v = toNum(b.value);
-          if (v == null) return [];
-          return [{
-            hMin: v, hMax: null, hMinInc: false, hMaxInc: false, // > v (equals handled by 'eq' band if present)
-            equals: [], prefix: b.prefix
-          }];
-        }
-        return [];
-      });
-    }
-
-    return { wMin, wMax, wMinInc, wMaxInc, priority, bands };
-  });
-
-  // Width window match: inclusive lower, upper by wMaxInc
-  const matchesWidth = (rule) => {
-    if (rule.wMax == null && rule.wMin == null) return false;
-    const aboveMin = (rule.wMin == null) ? true : (rule.wMinInc ? (w >= round1(rule.wMin)) : (w > round1(rule.wMin)));
-    const belowMax = (rule.wMax == null) ? true : (rule.wMaxInc ? (w <= round1(rule.wMax)) : (w < round1(rule.wMax)));
-    return aboveMin && belowMax;
-  };
-
-  const candidates = norms
-    .filter(matchesWidth)
-    .sort((a, b) => {
-      if ((a.priority ?? 0) !== (b.priority ?? 0)) return (a.priority ?? 0) - (b.priority ?? 0);
-      // narrower first
-      return (a.wMax ?? Infinity) - (b.wMax ?? Infinity);
-    });
-
-  // Height selection: equals first, then ranges with inclusivity
-  for (const r of candidates) {
-    // equals first
-    for (const b of r.bands) {
-      if (b.equals && b.equals.length) {
-        if (b.equals.includes(h)) return b.prefix;
-      }
-    }
-    // ranged
-    for (const b of r.bands) {
-      if (b.equals && b.equals.length) continue;
-      const minOK = (b.hMin == null) ? true :
-        (b.hMinInc ? (h >= round1(b.hMin)) : (h > round1(b.hMin)));
-      const maxOK = (b.hMax == null) ? true :
-        (b.hMaxInc ? (h <= round1(b.hMax)) : (h < round1(b.hMax)));
-      if (minOK && maxOK) return b.prefix;
-    }
+    for (const b of eqs) if (matchBand(h, b, tol)) return b.prefix;
+    for (const b of others) if (matchBand(h, b, tol)) return b.prefix;
   }
 
+  // fallback
+  if (process.env.DEFAULT_SERIES) return process.env.DEFAULT_SERIES.trim();
+
+  try {
+    const Barcode = require('../models/Barcode');
+    const row = await Barcode.aggregate([
+      { $match: { $or: [{ isAvailable: true }, { status: { $in: ['free', 'available'] } }] } },
+      { $group: { _id: '$series', c: { $sum: 1 } } },
+      { $sort: { c: -1, _id: 1 } },
+      { $limit: 1 },
+    ]);
+    if (row?.length) return row[0]._id;
+  } catch {}
   return null;
-};
+}
+
+module.exports = { sizeToPrefixFromDb };

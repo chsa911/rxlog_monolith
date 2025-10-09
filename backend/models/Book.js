@@ -33,6 +33,9 @@ const bookSchema = new Schema(
     // current active mark (belegt)
     BMarkb: { type: String, default: null, index: true },
 
+    // alias for new schema
+    barcode: { type: String, default: null, index: true },
+
     // --- Delayed release scheduling + audit ---
     // when the current mark should be returned to the pool
     BMarkReleaseDue: { type: Date, default: null },
@@ -41,6 +44,16 @@ const bookSchema = new Schema(
   },
   { minimize: false }
 );
+
+// Keep BMarkb and barcode in sync (alias fields)
+bookSchema.pre('save', function(next) {
+  if (this.isModified('barcode') && !this.isModified('BMarkb')) {
+    this.BMarkb = this.barcode;
+  } else if (this.isModified('BMarkb') && !this.isModified('barcode')) {
+    this.barcode = this.BMarkb;
+  }
+  next();
+});
 
 // Helpful indexes
 bookSchema.index({ BEind: -1 });

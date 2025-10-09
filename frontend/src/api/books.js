@@ -3,6 +3,20 @@ import { API_BASE } from "./config";
 
 const BOOKS_BASE = `${API_BASE}/api/books`;
 
+/** Create (register) a book — returns the created book (includes barcode/BMarkb) */
+export async function registerBook(payload) {
+  const res = await fetch(`${BOOKS_BASE}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
 /** List books with filters/pagination */
 export async function listBooks(params = {}) {
   const query = new URLSearchParams(params).toString();
@@ -24,18 +38,16 @@ export async function updateBook(id, data) {
     try {
       const j = await res.json();
       if (j?.error) msg = j.error;
-} catch (err) {
-  console.error(err);
-  throw err;
-}
+    } catch (err) {
+      // ignore JSON parse errors; keep default msg
+    }
     throw new Error(msg);
   }
   return res.json();
 }
 
 /** Autocomplete
- * Backend route is usually: GET /api/books/autocomplete/:field?q=...
- * If your backend uses query param `field` instead, see the alternative below.
+ * Backend route is: GET /api/books/autocomplete/:field?q=...
  */
 export async function autocomplete(field, q = "") {
   const url = new URL(`${BOOKS_BASE}/autocomplete/${encodeURIComponent(field)}`);
@@ -65,16 +77,3 @@ export async function setStatus(id, status) {
   }
   return updateBook(id, { BHistorisiert: false, BVorzeitig: false });
 }
-
-/* ---------- If your backend uses query param ?field= instead of /:field ----------
-
-export async function autocomplete(field, q = "") {
-  const url = new URL(`${BOOKS_BASE}/autocomplete`);
-  url.searchParams.set("field", field);
-  if (q) url.searchParams.set("q", q);
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
------------------------------------------------------------------------ */
