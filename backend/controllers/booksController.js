@@ -22,25 +22,41 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
+
+/** Normalize DB docs → consistent API shape */
 function normalizeBook(b) {
   const x = { ...b };
-  // legacy aliases from Atlas imports
+
+  // legacy numeric/page fields
   if (x.Bseiten != null && x.BSeiten == null) x.BSeiten = Number(x.Bseiten);
+  if (typeof x.BBreite === 'string') x.BBreite = toNum(x.BBreite);
+  if (typeof x.BHoehe  === 'string') x.BHoehe  = toNum(x.BHoehe);
+  delete x.Bseiten;
+  if (x['BEind*'] != null && x.BEind == null) delete x['BEind*'];
+
+  // legacy text aliases → canonical fields (so UI sees the same keys “as before”)
+  if (!x.BAutor && typeof x.author === 'string') x.BAutor = x.author;
+  if (!x.BAutor && typeof x.Autor  === 'string') x.BAutor = x.Autor;
+  if (!x.BTitel && typeof x.title  === 'string') x.BTitel = x.title;
+  if (!x.BTitel && typeof x.Titel  === 'string') x.BTitel = x.Titel;
+
+  if (!x.BVerlag && typeof x.publisher === 'string') x.BVerlag = x.publisher;
+  if (!x.BVerlag && typeof x.Verlag    === 'string') x.BVerlag = x.Verlag;
+
+  // keyword family (keep BKw the primary)
   if (x.Bkw != null && x.BKw == null) x.BKw = x.Bkw;
   if (x.Bverlag != null && x.BVerlag == null) x.BVerlag = x.Bverlag;
   if (x.Bw1 != null && x.BKw1 == null) x.BKw1 = x.Bw1;
-  if (typeof x.BBreite === 'string') x.BBreite = toNum(x.BBreite);
-  if (typeof x.BHoehe  === 'string') x.BHoehe  = toNum(x.BHoehe);
-  delete x.Bseiten; delete x.Bkw; delete x.Bverlag; delete x.Bw1;
-  if (x['BEind*'] != null && x.BEind == null) delete x['BEind*'];
+  delete x.Bkw; delete x.Bverlag; delete x.Bw1;
 
-  // guarantee both fields & a convenience virtual for UI
+  // barcode mirror + convenience
   if (!x.BMarkb && x.barcode) x.BMarkb = x.barcode;
   if (!x.barcode && x.BMarkb) x.barcode = x.BMarkb;
   x.BMark = x.BMarkb || x.barcode || null;
 
   return x;
 }
+
 function applyOnlyMarkedGuard(filter, onlyMarked) {
   if (!onlyMarked) return filter;
   const guard = {
@@ -58,14 +74,13 @@ function applyOnlyMarkedGuard(filter, onlyMarked) {
   Object.assign(filter, guard);
   return filter;
 }
+
 async function countCodeUsage(code) {
   if (!code) return 0;
-  return Book.countDocuments({
-    $or: [{ BMarkb: code }, { barcode: code }],
-  });
+  return Book.countDocuments({ $or: [{ BMarkb: code }, { barcode: code }] });
 }
 
-/* ---------- alias + exact helpers ---------- */
+/* ---------- alias + exact helpers (search) ---------- */
 const FIELD_ALIASES = {
   BTitel:   ['BTitel', 'Titel', 'title'],
   BAutor:   ['BAutor', 'Autor', 'author'],
@@ -258,7 +273,7 @@ async function registerBook(req, res) {
     const { BBreite, BHoehe, ...fields } = req.body;
     const w = width, h = height;
 
-    // map size to series
+    // size → series
     let prefix;
     try { prefix = await sizeToPrefixFromDb(w, h); }
     catch (e) { console.error('sizeToPrefixFromDb failed:', e); return res.status(500).json({ error: 'Size mapping error' }); }
@@ -270,7 +285,7 @@ async function registerBook(req, res) {
     const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const now = new Date();
 
-    // conservative: exclude codes referenced by ANY book (your rule prefers fresh codes)
+    // pick a code that is available and not referenced by any Book
     const usedCodes = new Set([
       ...(await Book.distinct('BMarkb', { BMarkb: { $type: 'string', $ne: '' } })),
       ...(await Book.distinct('barcode', { barcode: { $type: 'string', $ne: '' } })),
@@ -286,7 +301,7 @@ async function registerBook(req, res) {
       { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
     ).lean();
 
-    // optional fallback i → ik (if your rules use that)
+    // optional fallback: i → ik
     if (!picked && /i$/i.test(prefix)) {
       const alt = `${prefix}k`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       picked = await Barcode.findOneAndUpdate(
@@ -305,7 +320,7 @@ async function registerBook(req, res) {
       return res.status(409).json({ error: `No available barcode for series ${prefix}` });
     }
 
-    // normalize simple flags
+    // flags
     if (typeof fields.BHVorV === 'string') {
       const val = fields.BHVorV.trim().toUpperCase();
       if (val === 'H' || val === 'V') {
@@ -323,7 +338,7 @@ async function registerBook(req, res) {
       fields.BTopAt = fields.BTop ? new Date() : null;
     }
 
-    // fill required/default fields
+    // required/defaults
     fields.BAutor  = (fields.BAutor  ?? '').toString().trim() || 'Unbekannt';
     fields.BKw     = (fields.BKw     ?? '').toString().trim() || 'Allgemein';
     fields.BVerlag = (fields.BVerlag ?? '').toString().trim() || 'Unbekannt';
@@ -339,7 +354,6 @@ async function registerBook(req, res) {
         barcode: picked.code,
       });
     } catch (e) {
-      // release reservation on failure
       await Barcode.updateOne(
         { _id: picked._id },
         { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
@@ -347,7 +361,7 @@ async function registerBook(req, res) {
       throw e;
     }
 
-    // optional backlink for convenience (not used for freeing logic)
+    // backlink (informational)
     await Barcode.updateOne({ _id: picked._id }, { $set: { assignedBookId: created._id } });
 
     const payload = normalizeBook({
@@ -396,7 +410,6 @@ async function updateBook(req, res) {
       if (body.BTop === true) body.BTopAt = new Date();
       else delete body.BTopAt;
     }
-
     if (body.BHVorV === 'H' || body.BHVorV === 'V') {
       body.BHVorVAt = new Date();
       body.BMarkReleaseDue = sevenDaysFromNow();
@@ -415,7 +428,7 @@ async function updateBook(req, res) {
           await updated.save();
         }
       }
-    } catch (_) { /* ignore rank errors */ }
+    } catch (_) {}
 
     res.json({ ...normalizeBook(updated.toObject()), status: getStatus(updated) });
   } catch (err) {
@@ -432,13 +445,12 @@ async function deleteBook(req, res) {
     if (!book) return res.status(404).json({ error: 'Book not found' });
 
     const code = book.BMarkb || book.barcode || null;
-
     await Book.findByIdAndDelete(id);
 
     let freed = false;
     let remaining = 0;
     if (code) {
-      // your rule: only free when NO books reference it anymore
+      // free only if NO book references that code anymore
       remaining = await countCodeUsage(code);
       if (remaining === 0) {
         await Barcode.updateOne(
