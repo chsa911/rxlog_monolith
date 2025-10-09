@@ -22,6 +22,14 @@ function toNum(v) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
 }
+const safeRegExp = (s, flags = 'i') => {
+  const escaped = String(s ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escaped, flags);
+};
+const parseIntSafe = (v, d) => {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : d;
+};
 
 /** Normalize DB docs → consistent API shape */
 function normalizeBook(b) {
@@ -30,24 +38,26 @@ function normalizeBook(b) {
   // legacy numeric/page fields
   if (x.Bseiten != null && x.BSeiten == null) x.BSeiten = Number(x.Bseiten);
   if (typeof x.BBreite === 'string') x.BBreite = toNum(x.BBreite);
-  if (typeof x.BHoehe  === 'string') x.BHoehe  = toNum(x.BHoehe);
+  if (typeof x.BHoehe === 'string') x.BHoehe = toNum(x.BHoehe);
   delete x.Bseiten;
   if (x['BEind*'] != null && x.BEind == null) delete x['BEind*'];
 
-  // legacy text aliases → canonical fields (so UI sees the same keys “as before”)
+  // legacy text aliases → canonical fields
   if (!x.BAutor && typeof x.author === 'string') x.BAutor = x.author;
-  if (!x.BAutor && typeof x.Autor  === 'string') x.BAutor = x.Autor;
-  if (!x.BTitel && typeof x.title  === 'string') x.BTitel = x.title;
-  if (!x.BTitel && typeof x.Titel  === 'string') x.BTitel = x.Titel;
+  if (!x.BAutor && typeof x.Autor === 'string') x.BAutor = x.Autor;
+  if (!x.BTitel && typeof x.title === 'string') x.BTitel = x.title;
+  if (!x.BTitel && typeof x.Titel === 'string') x.BTitel = x.Titel;
 
   if (!x.BVerlag && typeof x.publisher === 'string') x.BVerlag = x.publisher;
-  if (!x.BVerlag && typeof x.Verlag    === 'string') x.BVerlag = x.Verlag;
+  if (!x.BVerlag && typeof x.Verlag === 'string') x.BVerlag = x.Verlag;
 
   // keyword family (keep BKw the primary)
   if (x.Bkw != null && x.BKw == null) x.BKw = x.Bkw;
   if (x.Bverlag != null && x.BVerlag == null) x.BVerlag = x.Bverlag;
   if (x.Bw1 != null && x.BKw1 == null) x.BKw1 = x.Bw1;
-  delete x.Bkw; delete x.Bverlag; delete x.Bw1;
+  delete x.Bkw;
+  delete x.Bverlag;
+  delete x.Bw1;
 
   // barcode mirror + convenience
   if (!x.BMarkb && x.barcode) x.BMarkb = x.barcode;
@@ -66,11 +76,15 @@ function applyOnlyMarkedGuard(filter, onlyMarked) {
     ],
   };
   if (filter.$or) {
-    const orBlock = filter.$or; delete filter.$or;
+    const orBlock = filter.$or;
+    delete filter.$or;
     filter.$and = (filter.$and || []).concat([{ $or: orBlock }, guard]);
     return filter;
   }
-  if (filter.$and) { filter.$and.push(guard); return filter; }
+  if (filter.$and) {
+    filter.$and.push(guard);
+    return filter;
+  }
   Object.assign(filter, guard);
   return filter;
 }
@@ -82,54 +96,83 @@ async function countCodeUsage(code) {
 
 /* ---------- alias + exact helpers (search) ---------- */
 const FIELD_ALIASES = {
-  BTitel:   ['BTitel', 'Titel', 'title'],
-  BAutor:   ['BAutor', 'Autor', 'author'],
-  BVerlag:  ['BVerlag', 'Bverlag', 'Verlag', 'publisher'],
-  BKw:      ['BKw', 'Bkw', 'keyword', 'keywords'],
-  BMarkb:   ['BMarkb', 'BMark', 'mark', 'barcode'],
+  BTitel: ['BTitel', 'Titel', 'title', 'titleKeyword'],
+  BAutor: ['BAutor', 'Autor', 'author'],
+  BVerlag: ['BVerlag', 'Bverlag', 'Verlag', 'publisher'],
+  BKw: ['BKw', 'Bkw', 'keyword', 'keywords', 'titleKeyword'],
+  BMarkb: ['BMarkb', 'BMark', 'mark', 'barcode'],
 };
 function expandFieldAliases(keys) {
   const set = new Set();
-  const source = (keys && keys.length) ? keys : Object.keys(FIELD_ALIASES);
-  for (const k of source) (FIELD_ALIASES[k] || [k]).forEach(a => set.add(a));
+  const source = keys && keys.length ? keys : Object.keys(FIELD_ALIASES);
+  for (const k of source) (FIELD_ALIASES[k] || [k]).forEach((a) => set.add(a));
   return Array.from(set);
 }
 function exactEqOrArrayClause(field, lcValue) {
   return {
     $or: [
-      { $expr: { $eq: [ { $toLower: { $trim: { input: `$${field}` } } }, lcValue ] } },
-      { $expr: {
-        $in: [
-          lcValue,
-          { $map: {
-            input: { $cond: [ { $isArray: `$${field}` }, `$${field}`, [] ] },
-            as: "v",
-            in: { $toLower: { $trim: { input: "$$v" } } }
-          } }
-        ]
-      } }
-    ]
+      {
+        $expr: {
+          $eq: [{ $toLower: { $trim: { input: `$${field}` } } }, lcValue],
+        },
+      },
+      {
+        $expr: {
+          $in: [
+            lcValue,
+            {
+              $map: {
+                input: { $cond: [{ $isArray: `$${field}` }, `$${field}`, []] },
+                as: 'v',
+                in: { $toLower: { $trim: { input: '$$v' } } },
+              },
+            },
+          ],
+        },
+      },
+    ],
   };
 }
 
 /* ========================= LIST (SEARCH) ========================= */
 async function listBooks(req, res) {
   try {
+     console.log('[listBooks] query=', req.query);
     const {
-      q, page = 1, limit = 20, sort, sortBy, order = 'desc',
-      createdFrom, createdTo,
+      q,
+      page = 1,
+      limit = 20,
+      sort,
+      sortBy,
+      order = 'desc',
+      createdFrom,
+      createdTo,
     } = req.query;
 
-    const onlyMarked = ['1','true','yes','on'].includes(String(req.query.onlyMarked || '').toLowerCase());
-    const exactFlag  = ['1','true','yes','on'].includes(String(req.query.exact || '').toLowerCase());
+    const onlyMarked = ['1', 'true', 'yes', 'on'].includes(
+      String(req.query.onlyMarked || '').toLowerCase()
+    );
+    const exactFlag = ['1', 'true', 'yes', 'on'].includes(
+      String(req.query.exact || '').toLowerCase()
+    );
 
-    const ALLOWED_TEXT_FIELDS = ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+    const ALLOWED_TEXT_FIELDS = [
+      'BTitel',
+      'BAutor',
+      'BVerlag',
+      'BKw',
+      'BMarkb',
+      'titleKeyword',
+      'keywords',
+    ];
     const fieldsFromQuery = String(req.query.fields || '')
-      .split(',').map(s => s.trim())
-      .filter(s => ALLOWED_TEXT_FIELDS.includes(s));
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((s) => ALLOWED_TEXT_FIELDS.includes(s));
 
-    const pg = Math.max(1, parseInt(page, 10) || 1);
-    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
+    const pg = Math.max(1, parseIntSafe(page, 1));
+    const lim = Math.min(200, Math.max(1, parseIntSafe(limit, 20)));
     const skip = (pg - 1) * lim;
     const direction = order === 'asc' ? 1 : -1;
     const sortField = sortBy || sort || 'BEind';
@@ -140,121 +183,265 @@ async function listBooks(req, res) {
       const cleaned = String(q).trim();
       const looksLikeBMark = /^[a-z]+[0-9]{2,}$/i.test(cleaned);
       const mRange = cleaned.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
-      const mGte  = cleaned.match(/^(?:>=\s*|)(\d+)\s*\+$/) || cleaned.match(/^>=\s*(\d+)$/);
-      const mLte  = cleaned.match(/^<=\s*(\d+)$/) || cleaned.match(/^(\d+)\s*-[ ]*$/);
-      const mEq   = cleaned.match(/^\d+$/);
+      const mGte =
+        cleaned.match(/^(?:>=\s*|)(\d+)\s*\+$/) ||
+        cleaned.match(/^>=\s*(\d+)$/);
+      const mLte =
+        cleaned.match(/^<=\s*(\d+)$/) ||
+        cleaned.match(/^(\d+)\s*-[ ]*$/);
+      const mEq = cleaned.match(/^\d+$/);
 
       if (looksLikeBMark || fieldsFromQuery.includes('BMarkb')) {
-        const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        filter.$or = [
-          { BMarkb: new RegExp(`^${escaped}$`, 'i') },
-          { barcode: new RegExp(`^${escaped}$`, 'i') },
-        ];
+        const exact = safeRegExp(`^${cleaned}$`, 'i');
+        filter.$or = [{ BMarkb: exact }, { barcode: exact }];
       } else if (mRange || mGte || mLte || mEq) {
         const pageFields = ['BSeiten', 'Bseiten'];
-        const convInt    = (f) => ({ $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null } });
-        const toText     = (f) => ({ $toString: `$${f}` });
-        const matchRange = (f) => ({ $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ } });
+        const convInt = (f) => ({
+          $convert: { input: `$${f}`, to: 'int', onError: null, onNull: null },
+        });
+        const toText = (f) => ({ $toString: `$${f}` });
+        const matchRange = (f) => ({
+          $regexFind: { input: toText(f), regex: /(\d+)\s*[-–—]\s*(\d+)/ },
+        });
 
         if (mRange) {
-          const lo = Number(mRange[1]), hi = Number(mRange[2]);
+          const lo = Number(mRange[1]),
+            hi = Number(mRange[2]);
           filter.$or = [
-            ...pageFields.map(f => ({ [f]: { $gte: lo, $lte: hi } })),
-            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
-              $and: [
-                { $ne: ['$$m', null] },
-                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, hi ] },
-                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, lo ] },
-              ]
-            }}}})),
-            ...pageFields.map(f => ({ $expr: {
-              $and: [
-                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                { $lte: [ lo, { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } } ] }
-              ]
-            }})),
+            ...pageFields.map((f) => ({ [f]: { $gte: lo, $lte: hi } })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $let: {
+                  vars: { m: matchRange(f) },
+                  in: {
+                    $and: [
+                      { $ne: ['$$m', null] },
+                      {
+                        $lte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 0] } },
+                          hi,
+                        ],
+                      },
+                      {
+                        $gte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 1] } },
+                          lo,
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $and: [
+                  {
+                    $regexMatch: {
+                      input: toText(f),
+                      regex: /^\s*(\d+)\s*\+$/,
+                    },
+                  },
+                  {
+                    $lte: [
+                      lo,
+                      {
+                        $toInt: {
+                          $replaceAll: {
+                            input: toText(f),
+                            find: '+',
+                            replacement: '',
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            })),
           ];
         } else if (mGte) {
           const x = Number(mGte[1]);
           filter.$or = [
-            ...pageFields.map(f => ({ [f]: { $gte: x } })),
-            ...pageFields.map(f => ({ $expr: { $gte: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({ $expr: {
-              $and: [
-                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                { $gte: [ { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } }, x ] }
-              ]
-            }})),
-            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
-              $and: [
-                { $ne: ['$$m', null] },
-                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, x ] }
-              ]
-            }}}})),
+            ...pageFields.map((f) => ({ [f]: { $gte: x } })),
+            ...pageFields.map((f) => ({ $expr: { $gte: [convInt(f), x] } })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $and: [
+                  {
+                    $regexMatch: {
+                      input: toText(f),
+                      regex: /^\s*(\d+)\s*\+$/,
+                    },
+                  },
+                  {
+                    $gte: [
+                      {
+                        $toInt: {
+                          $replaceAll: {
+                            input: toText(f),
+                            find: '+',
+                            replacement: '',
+                          },
+                        },
+                      },
+                      x,
+                    ],
+                  },
+                ],
+              },
+            })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $let: {
+                  vars: { m: matchRange(f) },
+                  in: {
+                    $and: [
+                      { $ne: ['$$m', null] },
+                      {
+                        $gte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 1] } },
+                          x,
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            })),
           ];
         } else if (mLte) {
           const x = Number(mLte[1]);
           filter.$or = [
-            ...pageFields.map(f => ({ [f]: { $lte: x } })),
-            ...pageFields.map(f => ({ $expr: { $lte: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
-              $and: [
-                { $ne: ['$$m', null] },
-                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, x ] }
-              ]
-            }}}})),
+            ...pageFields.map((f) => ({ [f]: { $lte: x } })),
+            ...pageFields.map((f) => ({ $expr: { $lte: [convInt(f), x] } })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $let: {
+                  vars: { m: matchRange(f) },
+                  in: {
+                    $and: [
+                      { $ne: ['$$m', null] },
+                      {
+                        $lte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 0] } },
+                          x,
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            })),
           ];
         } else {
           const x = Number(cleaned);
           filter.$or = [
-            ...pageFields.map(f => ({ [f]: x })),
-            ...pageFields.map(f => ({ $expr: { $eq: [ convInt(f), x ] } })),
-            ...pageFields.map(f => ({ $expr: { $let: { vars: { m: matchRange(f) }, in: {
-              $and: [
-                { $ne: ['$$m', null] },
-                { $lte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 0] } }, x ] },
-                { $gte: [ { $toInt: { $arrayElemAt: ['$$m.captures', 1] } }, x ] },
-              ]
-            }}}})),
-            ...pageFields.map(f => ({ $expr: {
-              $and: [
-                { $regexMatch: { input: toText(f), regex: /^\s*(\d+)\s*\+$/ } },
-                { $lte: [ x, { $toInt: { $replaceAll: { input: toText(f), find: '+', replacement: '' } } } ] }
-              ]
-            }})),
+            ...pageFields.map((f) => ({ [f]: x })),
+            ...pageFields.map((f) => ({ $expr: { $eq: [convInt(f), x] } })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $let: {
+                  vars: { m: matchRange(f) },
+                  in: {
+                    $and: [
+                      { $ne: ['$$m', null] },
+                      {
+                        $lte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 0] } },
+                          x,
+                        ],
+                      },
+                      {
+                        $gte: [
+                          { $toInt: { $arrayElemAt: ['$$m.captures', 1] } },
+                          x,
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            })),
+            ...pageFields.map((f) => ({
+              $expr: {
+                $and: [
+                  {
+                    $regexMatch: {
+                      input: toText(f),
+                      regex: /^\s*(\d+)\s*\+$/,
+                    },
+                  },
+                  {
+                    $lte: [
+                      x,
+                      {
+                        $toInt: {
+                          $replaceAll: {
+                            input: toText(f),
+                            find: '+',
+                            replacement: '',
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            })),
           ];
         }
       } else {
         const _requested = fieldsFromQuery.length
-          ? fieldsFromQuery : ['BTitel','BAutor','BVerlag','BKw','BMarkb'];
+          ? fieldsFromQuery
+          : ['BTitel', 'BAutor', 'BVerlag', 'BKw', 'BMarkb', 'titleKeyword', 'keywords'];
         const textFields = expandFieldAliases(_requested);
         const exactRequested = exactFlag || fieldsFromQuery.length > 0;
 
         if (exactRequested) {
           const lc = cleaned.toLowerCase();
-          filter.$or = textFields.map(f => exactEqOrArrayClause(f, lc));
+          filter.$or = textFields.map((f) => exactEqOrArrayClause(f, lc));
         } else {
-          const rx = new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-          filter.$or = textFields.map(f => ({ [f]: rx }));
+          const rx = safeRegExp(cleaned, 'i');
+          filter.$or = textFields.map((f) => ({ [f]: rx }));
         }
       }
     } else if (createdFrom || createdTo) {
+      const fromDate = createdFrom
+        ? new Date(createdFrom + 'T00:00:00.000Z')
+        : null;
+      const toDate = createdTo
+        ? new Date(createdTo + 'T23:59:59.999Z')
+        : null;
+      if ((fromDate && isNaN(fromDate)) || (toDate && isNaN(toDate))) {
+        return res
+          .status(400)
+          .json({ error: 'Invalid date format for createdFrom/createdTo' });
+      }
       filter.BEind = {};
-      if (createdFrom) filter.BEind.$gte = new Date(createdFrom + 'T00:00:00.000Z');
-      if (createdTo)   filter.BEind.$lt  = new Date(createdTo   + 'T23:59:59.999Z');
+      if (fromDate) filter.BEind.$gte = fromDate;
+      if (toDate) filter.BEind.$lt = toDate;
     }
 
     applyOnlyMarkedGuard(filter, onlyMarked);
 
     const [items, total] = await Promise.all([
-      Book.find(filter).sort({ [sortField]: direction, _id: -1 }).skip(skip).limit(lim).lean(),
+      Book.find(filter)
+        .sort({ [sortField]: direction, _id: -1 })
+        .skip(skip)
+        .limit(lim)
+        .lean(),
       Book.countDocuments(filter),
     ]);
 
-    const data = items.map(b => normalizeBook({ ...b, status: getStatus(b) }));
+    const data = items.map((b) => normalizeBook({ ...b, status: getStatus(b) }));
     res.json({ data, page: pg, limit: lim, total, pages: Math.ceil(total / lim) });
   } catch (err) {
-    console.error('listBooks error:', err);
+    console.error('listBooks error:', err && (err.stack || err.message || err));
+    const msg = String(err?.message || '').toLowerCase();
+    if (msg.includes('regexp') || msg.includes('cast') || msg.includes('invalid')) {
+      return res.status(400).json({ error: err.message || 'Bad request' });
+    }
     res.status(500).json({ error: 'Server error' });
   }
 }
@@ -262,40 +449,54 @@ async function listBooks(req, res) {
 /* ========================= REGISTER (POST /api/books/register) ========================= */
 async function registerBook(req, res) {
   const rawBreite = req.body.BBreite ?? req.body.width ?? req.body.breite;
-  const rawHoehe  = req.body.BHoehe  ?? req.body.height ?? req.body.hoehe;
-  const width  = toNumberLoose(rawBreite);
+  const rawHoehe = req.body.BHoehe ?? req.body.height ?? req.body.hoehe;
+  const width = toNumberLoose(rawBreite);
   const height = toNumberLoose(rawHoehe);
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
-    return res.status(400).json({ error: 'Invalid dimensions', details: { BBreite: rawBreite, BHoehe: rawHoehe } });
+    return res
+      .status(400)
+      .json({
+        error: 'Invalid dimensions',
+        details: { BBreite: rawBreite, BHoehe: rawHoehe },
+      });
   }
 
   try {
     const { BBreite, BHoehe, ...fields } = req.body;
-    const w = width, h = height;
+    const w = width,
+      h = height;
 
     // size → series
     let prefix;
-    try { prefix = await sizeToPrefixFromDb(w, h); }
-    catch (e) { console.error('sizeToPrefixFromDb failed:', e); return res.status(500).json({ error: 'Size mapping error' }); }
+    try {
+      prefix = await sizeToPrefixFromDb(w, h);
+    } catch (e) {
+      console.error('sizeToPrefixFromDb failed:', e);
+      return res.status(500).json({ error: 'Size mapping error' });
+    }
     if (!prefix) {
       console.warn('[registerBook] no prefix for', { w, h });
-      return res.status(409).json({ error: 'No matching size rule', width: w, height: h });
+      return res
+        .status(409)
+        .json({ error: 'No matching size rule', width: w, height: h });
     }
 
     const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const now = new Date();
 
-    // pick a code that is available and not referenced by any Book
+    // ensure uniqueness across books
     const usedCodes = new Set([
       ...(await Book.distinct('BMarkb', { BMarkb: { $type: 'string', $ne: '' } })),
-      ...(await Book.distinct('barcode', { barcode: { $type: 'string', $ne: '' } })),
+      ...(await Book.distinct('barcode', {
+        barcode: { $type: 'string', $ne: '' },
+      })),
     ]);
 
     let picked = await Barcode.findOneAndUpdate(
       {
         series: new RegExp(`^${esc}$`, 'i'),
         code: { $nin: Array.from(usedCodes) },
-        $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
+        $or: [{ isAvailable: true }, { status: { $in: ['free', 'available'] } }],
       },
       { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
       { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
@@ -308,7 +509,7 @@ async function registerBook(req, res) {
         {
           series: new RegExp(`^${alt}$`, 'i'),
           code: { $nin: Array.from(usedCodes) },
-          $or: [{ isAvailable: true }, { status: { $in: ['free','available'] } }],
+          $or: [{ isAvailable: true }, { status: { $in: ['free', 'available'] } }],
         },
         { $set: { isAvailable: false, status: 'reserved', reservedAt: now } },
         { sort: { rank: 1, triplet: 1, code: 1 }, new: true, returnDocument: 'after' }
@@ -317,7 +518,9 @@ async function registerBook(req, res) {
 
     if (!picked) {
       console.warn('[registerBook] no available barcode for series', prefix);
-      return res.status(409).json({ error: `No available barcode for series ${prefix}` });
+      return res
+        .status(409)
+        .json({ error: `No available barcode for series ${prefix}` });
     }
 
     // flags
@@ -339,16 +542,19 @@ async function registerBook(req, res) {
     }
 
     // required/defaults
-    fields.BAutor  = (fields.BAutor  ?? '').toString().trim() || 'Unbekannt';
-    fields.BKw     = (fields.BKw     ?? '').toString().trim() || 'Allgemein';
+    fields.BAutor = (fields.BAutor ?? '').toString().trim() || 'Unbekannt';
+    fields.BKw = (fields.BKw ?? '').toString().trim() || 'Allgemein';
     fields.BVerlag = (fields.BVerlag ?? '').toString().trim() || 'Unbekannt';
-    fields.BKP     = Number.isFinite(Number(fields.BKP))     ? Number(fields.BKP)     : 0;
-    fields.BSeiten = Number.isFinite(Number(fields.BSeiten)) ? Number(fields.BSeiten) : 0;
+    fields.BKP = Number.isFinite(Number(fields.BKP)) ? Number(fields.BKP) : 0;
+    fields.BSeiten = Number.isFinite(Number(fields.BSeiten))
+      ? Number(fields.BSeiten)
+      : 0;
 
     let created;
     try {
       created = await Book.create({
-        BBreite: w, BHoehe: h,
+        BBreite: w,
+        BHoehe: h,
         ...fields,
         BMarkb: picked.code,
         barcode: picked.code,
@@ -356,22 +562,32 @@ async function registerBook(req, res) {
     } catch (e) {
       await Barcode.updateOne(
         { _id: picked._id },
-        { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
+        {
+          $set: {
+            isAvailable: true,
+            status: 'available',
+            reservedAt: null,
+            assignedBookId: null,
+          },
+        }
       );
       throw e;
     }
 
     // backlink (informational)
-    await Barcode.updateOne({ _id: picked._id }, { $set: { assignedBookId: created._id } });
+    await Barcode.updateOne(
+      { _id: picked._id },
+      { $set: { assignedBookId: created._id } }
+    );
 
     const payload = normalizeBook({
       _id: created._id,
       BBreite: created.BBreite,
-      BHoehe:  created.BHoehe,
+      BHoehe: created.BHoehe,
       barcode: picked.code,
-      BMarkb:  picked.code,
-      BAutor:  created.BAutor,
-      BKw:     created.BKw,
+      BMarkb: picked.code,
+      BAutor: created.BAutor,
+      BKw: created.BKw,
       BVerlag: created.BVerlag,
       BSeiten: created.BSeiten,
     });
@@ -404,7 +620,7 @@ async function updateBook(req, res) {
     const body = { ...req.body };
 
     if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
-    if (body.BHoehe  != null) body.BHoehe  = toNum(body.BHoehe);
+    if (body.BHoehe != null) body.BHoehe = toNum(body.BHoehe);
 
     if (typeof body.BTop === 'boolean') {
       if (body.BTop === true) body.BTopAt = new Date();
@@ -416,7 +632,8 @@ async function updateBook(req, res) {
     }
 
     const updated = await Book.findByIdAndUpdate(id, body, {
-      new: true, runValidators: true,
+      new: true,
+      runValidators: true,
     });
     if (!updated) return res.status(404).json({ error: 'Book not found' });
 
@@ -455,13 +672,26 @@ async function deleteBook(req, res) {
       if (remaining === 0) {
         await Barcode.updateOne(
           { code },
-          { $set: { isAvailable: true, status: 'available', reservedAt: null, assignedBookId: null } }
+          {
+            $set: {
+              isAvailable: true,
+              status: 'available',
+              reservedAt: null,
+              assignedBookId: null,
+            },
+          }
         );
         freed = true;
       }
     }
 
-    res.json({ ok: true, deletedId: id, code: code || null, freed, stillReferencedBy: remaining });
+    res.json({
+      ok: true,
+      deletedId: id,
+      code: code || null,
+      freed,
+      stillReferencedBy: remaining,
+    });
   } catch (err) {
     console.error('deleteBook error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -478,7 +708,7 @@ async function autocomplete(req, res) {
     if (!ALLOWED.has(field)) return res.status(400).json({ error: 'Invalid field' });
     if (!q || String(q).trim().length < 1) return res.json([]);
 
-    const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const rx = safeRegExp(String(q).trim(), 'i');
     const docs = await Book.aggregate([
       { $match: { [field]: rx } },
       { $group: { _id: `$${field}`, count: { $sum: 1 } } },
@@ -486,7 +716,7 @@ async function autocomplete(req, res) {
       { $limit: 20 },
     ]);
 
-    res.json(docs.map(d => d._id).filter(Boolean));
+    res.json(docs.map((d) => d._id).filter(Boolean));
   } catch (err) {
     console.error('autocomplete error:', err);
     res.status(500).json({ error: 'Server error' });

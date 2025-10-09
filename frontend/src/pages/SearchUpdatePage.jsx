@@ -55,6 +55,7 @@ export default function SearchUpdatePage() {
     BAutor: true,
     BVerlag: false,
     BKw: true,
+    titleKeyword: true,   // ✅ include new field
     BMarkb: false,
   });
 
@@ -87,6 +88,7 @@ export default function SearchUpdatePage() {
     if (to) p.createdTo = to;
     if (query?.trim()) p.q = query.trim();
     if (onlyMarked) p.onlyMarked = 1;
+    // ✅ pass selected fields (now can include titleKeyword)
     if (!isNumeric && selectedFields.length) p.fields = selectedFields.join(",");
     if (!isNumeric && exact) p.exact = 1;
     return p;
@@ -115,15 +117,8 @@ export default function SearchUpdatePage() {
     }
   }
 
-  useEffect(() => {
-    fetchData(1);
-    // eslint-disable-next-line
-  }, []);
-
-  useEffect(() => {
-    fetchData(1);
-    // eslint-disable-next-line
-  }, [onlyMarked, exact, selectedFields.join(","), isNumeric]);
+  useEffect(() => { fetchData(1); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { fetchData(1); /* eslint-disable-next-line */ }, [onlyMarked, exact, selectedFields.join(","), isNumeric]);
 
   async function setHV(id, value) {
     try {
@@ -148,18 +143,14 @@ export default function SearchUpdatePage() {
     const hv = pickAny(b, "BHVorV", "BHVOrV", "hv", "HV");
     const at = pickAny(b, "BHVorVAt", "BHVOrVAt", "hvAt");
     return hv === "H" || hv === "V" ? { hv, at } : { hv: null, at: null };
-  }
+    }
 
   return (
     <div className="space-y-4 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Suche &amp; Update (H/V &amp; Top)</h1>
         <label className="text-sm flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={debug}
-            onChange={(e) => setDebug(e.target.checked)}
-          />
+          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
           Debug: {debug ? "An" : "Aus"}
         </label>
       </div>
@@ -179,50 +170,28 @@ export default function SearchUpdatePage() {
 
         <label className="flex flex-col gap-1">
           <span>Von</span>
-          <input
-            type="date"
-            className="border rounded p-2"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
+          <input type="date" className="border rounded p-2" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
 
         <label className="flex flex-col gap-1">
           <span>Bis</span>
-          <input
-            type="date"
-            className="border rounded p-2"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
+          <input type="date" className="border rounded p-2" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
 
         <div className="flex items-end gap-2">
-          <button
-            onClick={() => fetchData(1)}
-            className="bg-blue-600 text-white px-4 py-2 rounded"
-            disabled={loading}
-          >
+          <button onClick={() => fetchData(1)} className="bg-blue-600 text-white px-4 py-2 rounded" disabled={loading}>
             {loading ? "Laden…" : "Suchen"}
           </button>
           <button
             onClick={() => {
-              setQuery("");
-              setFrom("");
-              setTo("");
-              setOnlyMarked(false);
-              setExact(false);
+              setQuery(""); setFrom(""); setTo("");
+              setOnlyMarked(false); setExact(false);
               setFieldFilter({
-                BTitel: false,
-                BAutor: true,
-                BVerlag: false,
-                BKw: true,
-                BMarkb: false,
+                BTitel: false, BAutor: true, BVerlag: false, BKw: true, titleKeyword: true, BMarkb: false,
               });
               fetchData(1);
             }}
-            className="px-4 py-2 border rounded"
-            disabled={loading}
+            className="px-4 py-2 border rounded" disabled={loading}
           >
             Zurücksetzen
           </button>
@@ -231,20 +200,12 @@ export default function SearchUpdatePage() {
         {/* Row 2: toggles */}
         <div className="md:col-span-4 flex flex-wrap items-center gap-4">
           <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={onlyMarked}
-              onChange={(e) => setOnlyMarked(e.target.checked)}
-            />
+            <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
             Nur mit BMark
           </label>
 
           <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={exact}
-              onChange={(e) => setExact(e.target.checked)}
-            />
+            <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
             Exakte Suche
           </label>
 
@@ -254,6 +215,7 @@ export default function SearchUpdatePage() {
               ["BAutor", "Autor"],
               ["BVerlag", "Verlag"],
               ["BKw", "Keyword"],
+              ["titleKeyword", "Titel-Keyword"], // ✅ new
               ["BTitel", "Titel"],
               ["BMarkb", "BMark"],
             ].map(([key, label]) => (
@@ -261,9 +223,7 @@ export default function SearchUpdatePage() {
                 <input
                   type="checkbox"
                   checked={!!fieldFilter[key]}
-                  onChange={(e) =>
-                    setFieldFilter((prev) => ({ ...prev, [key]: e.target.checked }))
-                  }
+                  onChange={(e) => setFieldFilter((prev) => ({ ...prev, [key]: e.target.checked }))}
                 />
                 <span className="text-sm">{label}</span>
               </label>
@@ -273,8 +233,8 @@ export default function SearchUpdatePage() {
 
         {/* Summary */}
         <div className="md:col-span-4 text-sm text-gray-600">
-          Ergebnisse: <strong>{result.total ?? result.data.length}</strong>
-          {" • "}Seite {result.page ?? 1} / {result.pages ?? 1}
+          Ergebnisse: <strong>{result.total ?? result.data.length}</strong>{" • "}
+          Seite {result.page ?? 1} / {result.pages ?? 1}
         </div>
       </div>
 
@@ -298,9 +258,10 @@ export default function SearchUpdatePage() {
               const { hv, at } = deriveHV(b);
               const id = b._id || pickAny(b, "_id", "id");
 
-              const mark = pickAny(b, "BMarkb", "BMark", "mark");
+              const mark = pickAny(b, "BMarkb", "BMark", "mark", "barcode"); // read barcode too
               const autor = pickAny(b, "BAutor", "Autor", "author");
-              const kw = pickAny(b, "BKw", "keyword", "keywords", "kw");
+              // ✅ also read titleKeyword for the Keyword column
+              const kw = pickAny(b, "BKw", "keyword", "keywords", "titleKeyword", "kw");
               const verlag = pickAny(b, "BVerlag", "publisher", "Verlag");
               const seiten = pickAny(b, "BSeiten", "Bseiten", "pages", "Seiten");
               const eind = pickAny(b, "BEind", "createdAt", "created", "created_at");
@@ -318,31 +279,13 @@ export default function SearchUpdatePage() {
                   <td className="p-2">
                     <div className="flex gap-2">
                       <label>
-                        <input
-                          type="radio"
-                          name={`hv-${id}`}
-                          checked={hv === null}
-                          onChange={() => setHV(id, null)}
-                        />{" "}
-                        —
+                        <input type="radio" name={`hv-${id}`} checked={hv === null} onChange={() => setHV(id, null)} /> —
                       </label>
                       <label>
-                        <input
-                          type="radio"
-                          name={`hv-${id}`}
-                          checked={hv === "H"}
-                          onChange={() => setHV(id, "H")}
-                        />{" "}
-                        H
+                        <input type="radio" name={`hv-${id}`} checked={hv === "H"} onChange={() => setHV(id, "H")} /> H
                       </label>
                       <label>
-                        <input
-                          type="radio"
-                          name={`hv-${id}`}
-                          checked={hv === "V"}
-                          onChange={() => setHV(id, "V")}
-                        />{" "}
-                        V
+                        <input type="radio" name={`hv-${id}`} checked={hv === "V"} onChange={() => setHV(id, "V")} /> V
                       </label>
                       <span className="text-xs text-gray-500">{toLocale(at)}</span>
                     </div>
@@ -350,22 +293,10 @@ export default function SearchUpdatePage() {
                   <td className="p-2">
                     <div className="flex gap-2">
                       <label>
-                        <input
-                          type="radio"
-                          name={`top-${id}`}
-                          checked={!top}
-                          onChange={() => setTop(id, false)}
-                        />{" "}
-                        Nein
+                        <input type="radio" name={`top-${id}`} checked={!top} onChange={() => setTop(id, false)} /> Nein
                       </label>
                       <label>
-                        <input
-                          type="radio"
-                          name={`top-${id}`}
-                          checked={top}
-                          onChange={() => setTop(id, true)}
-                        />{" "}
-                        Ja
+                        <input type="radio" name={`top-${id}`} checked={top} onChange={() => setTop(id, true)} /> Ja
                       </label>
                       <span className="text-xs text-gray-500">{toLocale(topAt)}</span>
                     </div>
@@ -382,18 +313,14 @@ export default function SearchUpdatePage() {
       {result.pages > 1 && (
         <div className="flex items-center justify-between mt-3">
           <div className="flex gap-2">
-            <button
-              className="px-3 py-2 border rounded disabled:opacity-50"
-              disabled={result.page <= 1 || loading}
-              onClick={() => fetchData(result.page - 1)}
-            >
+            <button className="px-3 py-2 border rounded disabled:opacity-50"
+                    disabled={result.page <= 1 || loading}
+                    onClick={() => fetchData(result.page - 1)}>
               ← Zurück
             </button>
-            <button
-              className="px-3 py-2 border rounded disabled:opacity-50"
-              disabled={result.page >= result.pages || loading}
-              onClick={() => fetchData(result.page + 1)}
-            >
+            <button className="px-3 py-2 border rounded disabled:opacity-50"
+                    disabled={result.page >= result.pages || loading}
+                    onClick={() => fetchData(result.page + 1)}>
               Weiter →
             </button>
           </div>
@@ -407,10 +334,7 @@ export default function SearchUpdatePage() {
               className="w-20 border rounded p-1 text-center"
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  const v = Math.min(
-                    Math.max(1, Number(e.currentTarget.value || 1)),
-                    result.pages
-                  );
+                  const v = Math.min(Math.max(1, Number(e.currentTarget.value || 1)), result.pages);
                   fetchData(v);
                 }
               }}
