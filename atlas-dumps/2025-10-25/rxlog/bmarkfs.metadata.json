@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"BMark":{"$numberInt":"1"}},"name":"BMark_1","background":true}],"uuid":"cba26c108a0248029f3d5366bc87eb65","collectionName":"bmarkfs","type":"collection"}

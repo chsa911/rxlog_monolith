@@ -1,0 +1,10 @@
+# Backend
+MONGO_URI="mongodb+srv://chsa911_db_user:Pointbreak_1@cluster0.e3bvsky.mongodb.net/rxlog?retryWrites=true&w=majority"
+#MONGO_URI=mongodb://localhost:27017/rxlog
+PORT=4000
+CORS_ORIGIN=http://localhost:5173
+
+# Optional app-specific vars seen in code
+# DEFAULT_SERIES=egk
+TOL_CM=0.2
+NODE_ENV=development
