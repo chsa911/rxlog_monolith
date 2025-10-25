@@ -3,6 +3,7 @@ const Book = require("../models/Book");
 const Barcode = require("../models/Barcode");
 const { getStatus, computeRank } = require("../utils/status");
 const { sizeToPrefixFromDb } = require("../utils/sizeToPrefixFromDb");
+const { Types } = require("mongoose");
 
 const MS_7_DAYS = 7 * 24 * 60 * 60 * 1000;
 const sevenDaysFromNow = () => new Date(Date.now() + MS_7_DAYS);
@@ -41,6 +42,17 @@ const normEq = (field, lcValue) => ({
   }
 });
 const escapeRx = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// ObjectId guard + fallback to barcode fields
+const isObjectId = v => Types.ObjectId.isValid(String(v || "").trim());
+function idOrCodeQuery(v) {
+  const s = String(v || "").trim();
+  if (isObjectId(s)) return { _id: s };
+  const lc = s.toLowerCase();
+  return {
+    $or: [normEq("BMarkb", lc), normEq("barcode", lc), normEq("BMark", lc)]
+  };
+}
 
 /** Normalize DB docs → consistent API shape */
 function normalizeBook(b) {
@@ -494,12 +506,10 @@ async function listBooks(req, res) {
         "[listBooks] filter-build error:",
         e && (e.stack || e.message || e)
       );
-      return res
-        .status(400)
-        .json({
-          error: "Invalid search parameters",
-          message: e.message || String(e)
-        });
+      return res.status(400).json({
+        error: "Invalid search parameters",
+        message: e.message || String(e)
+      });
     }
 
     if (
@@ -566,12 +576,10 @@ async function registerBook(req, res) {
   const width = toNumberLoose(rawBreite);
   const height = toNumberLoose(rawHoehe);
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
-    return res
-      .status(400)
-      .json({
-        error: "Invalid dimensions",
-        details: { BBreite: rawBreite, BHoehe: rawHoehe }
-      });
+    return res.status(400).json({
+      error: "Invalid dimensions",
+      details: { BBreite: rawBreite, BHoehe: rawHoehe }
+    });
   }
 
   // local helpers
@@ -635,23 +643,19 @@ async function registerBook(req, res) {
 
     if (suppliedRaw) {
       if (!seriesForCodeRx.test(suppliedRaw)) {
-        return res
-          .status(400)
-          .json({
-            error: `Barcode "${suppliedRaw}" does not match expected series`,
-            expectedSeries: allowedSeries
-          });
+        return res.status(400).json({
+          error: `Barcode "${suppliedRaw}" does not match expected series`,
+          expectedSeries: allowedSeries
+        });
       }
 
       const usedLc = new Set(
         Array.from(usedCodes).map(x => String(x).toLowerCase())
       );
       if (usedCodes.has(suppliedRaw) || usedLc.has(suppliedRaw.toLowerCase())) {
-        return res
-          .status(409)
-          .json({
-            error: `Barcode ${suppliedRaw} is already used by another book`
-          });
+        return res.status(409).json({
+          error: `Barcode ${suppliedRaw} is already used by another book`
+        });
       }
 
       picked = await Barcode.findOneAndUpdate(
@@ -668,12 +672,10 @@ async function registerBook(req, res) {
       ).lean();
 
       if (!picked) {
-        return res
-          .status(409)
-          .json({
-            error: `Barcode ${suppliedRaw} is not available in allowed series`,
-            allowedSeries
-          });
+        return res.status(409).json({
+          error: `Barcode ${suppliedRaw} is not available in allowed series`,
+          allowedSeries
+        });
       }
     }
 
@@ -723,13 +725,11 @@ async function registerBook(req, res) {
           "or fallback",
           altSeries
         );
-        return res
-          .status(409)
-          .json({
-            error: `No available barcode for series ${prefix}${
-              altSeries ? ` (or ${altSeries})` : ""
-            }`
-          });
+        return res.status(409).json({
+          error: `No available barcode for series ${prefix}${
+            altSeries ? ` (or ${altSeries})` : ""
+          }`
+        });
       }
     }
 
@@ -818,7 +818,8 @@ async function registerBook(req, res) {
 async function getBook(req, res) {
   try {
     const { id } = req.params;
-    const book = await Book.findById(id).lean();
+    const query = idOrCodeQuery(id);
+    const book = await Book.findOne(query).lean();
     if (!book) return res.status(404).json({ error: "Book not found" });
     res.json({ ...normalizeBook(book), status: getStatus(book) });
   } catch (err) {
@@ -833,6 +834,11 @@ async function updateBook(req, res) {
     const { id } = req.params;
     const body = { ...req.body };
 
+    // strip invalid _id to avoid cast errors on payloads
+    if ("_id" in body && !isObjectId(body._id)) {
+      delete body._id;
+    }
+
     if (body.BBreite != null) body.BBreite = toNum(body.BBreite);
     if (body.BHoehe != null) body.BHoehe = toNum(body.BHoehe);
 
@@ -845,7 +851,8 @@ async function updateBook(req, res) {
       body.BMarkReleaseDue = sevenDaysFromNow();
     }
 
-    const updated = await Book.findByIdAndUpdate(id, body, {
+    const query = idOrCodeQuery(id);
+    const updated = await Book.findOneAndUpdate(query, body, {
       new: true,
       runValidators: true
     });
@@ -875,11 +882,14 @@ async function updateBook(req, res) {
 async function deleteBook(req, res) {
   try {
     const { id } = req.params;
-    const book = await Book.findById(id);
+    const query = idOrCodeQuery(id);
+    const book = await Book.findOne(query);
     if (!book) return res.status(404).json({ error: "Book not found" });
 
     const code = book.BMarkb || book.barcode || book.BMark || null;
-    await Book.findByIdAndDelete(id);
+
+    // delete by the actual _id to be safe
+    await Book.deleteOne({ _id: book._id });
 
     let freed = false;
     let remaining = 0;
@@ -887,7 +897,7 @@ async function deleteBook(req, res) {
       remaining = await countCodeUsage(code);
       if (remaining === 0) {
         await Barcode.updateOne(
-          { code },
+          { code: new RegExp(`^${escapeRx(code)}$`, "i") },
           {
             $set: {
               isAvailable: true,
@@ -903,7 +913,7 @@ async function deleteBook(req, res) {
 
     res.json({
       ok: true,
-      deletedId: id,
+      deletedId: String(book._id),
       code: code || null,
       freed,
       stillReferencedBy: remaining
