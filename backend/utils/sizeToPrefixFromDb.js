@@ -1,106 +1,79 @@
-// backend/utils/sizeToPrefixFromDb.js
+// utils/sizeToPrefixFromDb.js
 const SizeRule = require("../models/SizeRule");
 
-// Tiny debug so you can see this file is actually loaded
-if (!process.env.SILENT_SIZE_DEBUG) {
-  console.log("[sizeToPrefixFromDb] using", __filename);
-}
-
-function toNum(x) {
+// normalize "24,6" -> 24.6 (same as your toNumberLoose)
+function parseNum(x) {
   if (typeof x === "number") return x;
-  const n = Number(
-    String(x ?? "")
-      .trim()
-      .replace(",", ".")
-  );
-  return Number.isFinite(n) ? n : NaN;
+  return Number(String(x).trim().replace(",", "."));
 }
 
-const round1 = x => Math.round(x * 10) / 10;
-
-function widthInRange(w, r) {
-  const { minB = null, maxB = null, minBInc = true, maxBInc = true } = r;
-  if (minB != null && (minBInc ? w < Number(minB) : w <= Number(minB)))
-    return false;
-  if (maxB != null && (maxBInc ? w > Number(maxB) : w >= Number(maxB)))
-    return false;
-  return true;
-}
-
-function safeTol() {
-  const tParsed = Number(process.env.TOL_CM);
-  return Number.isFinite(tParsed) ? tParsed : 0.2; // default 0.2 cm
-}
-
-function matchBand(h, b, tol) {
-  if (!b) return false;
-  const cond = b.condition;
-  if (cond === "lt" && b.value != null) return h < Number(b.value) + tol;
-  if (cond === "gt" && b.value != null) return h > Number(b.value) - tol;
-  if (cond === "eq") {
-    const vals = Array.isArray(b.values) ? b.values : [];
-    return vals.some(v => Math.abs(h - Number(v)) <= tol);
+function coversWidth(doc, W) {
+  // Prefer new-style: scope.W.{min,max,minInclusive,maxInclusive}
+  const sw = doc.scope?.W;
+  if (sw) {
+    const min = sw.min ?? -Infinity;
+    const max = sw.max ?? Infinity;
+    const minInc = sw.minInclusive !== false; // default true
+    const maxInc = sw.maxInclusive !== false; // default true
+    const lowerOk = minInc ? W >= min : W > min;
+    const upperOk = maxInc ? W <= max : W < max;
+    return lowerOk && upperOk;
   }
-  return false;
+  // Legacy: minW/maxW or minB/maxB
+  const min = doc.minW ?? doc.minB ?? -Infinity;
+  const max = doc.maxW ?? doc.maxB ?? Infinity;
+  const minInc = (doc.minWInc ?? doc.minBInc) !== false;
+  const maxInc = (doc.maxWInc ?? doc.maxBInc) !== false;
+  const lowerOk = minInc ? W >= min : W > min;
+  const upperOk = maxInc ? W <= max : W < max;
+  return lowerOk && upperOk;
 }
 
-async function sizeToPrefixFromDb(widthCm, heightCm) {
-  const tol = safeTol();
-  const w = round1(toNum(widthCm));
-  const h = round1(toNum(heightCm));
-  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+// Option-1 band resolution:
+// 1) eq wins if H exactly equals any value
+// 2) else if H <= lt.value -> lt
+// 3) else -> gt
+function pickBand(scope, H) {
+  const bands = Array.isArray(scope.bands) ? scope.bands : [];
 
-  const rules = await SizeRule.find({}).lean();
-
-  const matches = rules
-    .filter(r => widthInRange(w, r))
-    .sort((a, b) => {
-      const aSpan = (a.maxB ?? Infinity) - (a.minB ?? -Infinity);
-      const bSpan = (b.maxB ?? Infinity) - (b.minB ?? -Infinity);
-      return aSpan - bSpan;
-    });
-
-  // debug one-liner — comment out later if noisy
-  if (!process.env.SILENT_SIZE_DEBUG) {
-    console.debug("[sizeToPrefix] w,h,tol", {
-      w,
-      h,
-      tol,
-      widthMatches: matches.map(r => ({ minB: r.minB, maxB: r.maxB }))
-    });
+  // 1) exacts
+  for (const b of bands) {
+    if (b?.condition === "eq" && Array.isArray(b.values) && b.values.includes(H)) {
+      return b;
+    }
   }
 
-  for (const rule of matches) {
-    const bands = Array.isArray(rule.bands) ? rule.bands : [];
-    const eqs = bands.filter(b => b.condition === "eq");
-    const others = bands.filter(b => b.condition !== "eq");
+  // 2) thresholds
+  const lt = bands.find(b => b?.condition === "lt" && typeof b.value === "number");
+  const gt = bands.find(b => b?.condition === "gt" && typeof b.value === "number");
 
-    for (const b of eqs) if (matchBand(h, b, tol)) return b.prefix;
-    for (const b of others) if (matchBand(h, b, tol)) return b.prefix;
-  }
+  if (!lt && !gt) return null;
+  const T = lt?.value ?? gt?.value; // they should share the same threshold
 
-  // Optional: default series fallback (keep current behavior if you want)
-  if (process.env.DEFAULT_SERIES) return process.env.DEFAULT_SERIES.trim();
-
-  // Optional: fall back to series with most available
-  try {
-    const Barcode = require("../models/Barcode");
-    const row = await Barcode.aggregate([
-      {
-        $match: {
-          $or: [
-            { isAvailable: true },
-            { status: { $in: ["free", "available"] } }
-          ]
-        }
-      },
-      { $group: { _id: "$series", c: { $sum: 1 } } },
-      { $sort: { c: -1, _id: 1 } },
-      { $limit: 1 }
-    ]);
-    if (row?.length) return row[0]._id;
-  } catch {}
+  if (lt && H <= T) return lt; // inclusive
+  if (gt) return gt;           // strictly greater
   return null;
+}
+
+/**
+ * Given (width, height), return the prefix string (e.g., 'lgk', 'egk', 'ogk'),
+ * or null if no scope/band matches.
+ */
+async function sizeToPrefixFromDb(widthRaw, heightRaw) {
+  const W = parseNum(widthRaw);
+  const H = parseNum(heightRaw);
+
+  if (!Number.isFinite(W) || !Number.isFinite(H)) return null;
+
+  // Pull small ruleset and filter in code (there are ~21 docs)
+  const rules = await SizeRule.find({}, { scope: 1, minW:1, maxW:1, minWInc:1, maxWInc:1, minB:1, maxB:1, minBInc:1, maxBInc:1, bands: 1 })
+                              .lean();
+
+  const scope = rules.find(r => coversWidth(r, W));
+  if (!scope) return null;
+
+  const band = pickBand(scope, H);
+  return band?.prefix ?? null;
 }
 
 module.exports = { sizeToPrefixFromDb };
