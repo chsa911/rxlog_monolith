@@ -1,25 +1,30 @@
 // frontend/src/pages/SearchUpdatePage.jsx
-import { useEffect, useMemo, useState } from "react";
-import { listBooks } from "../api/books";
+import React, { useEffect, useMemo, useState } from "react";
+import { listBooks, updateBook } from "../api/books";
 
 export default function SearchUpdatePage() {
   // --- query state (search/sort/paging) ---
   const [q, setQ] = useState({
     page: 1,
     limit: 20,
-    sortBy: "BEind",   // keep legacy default your UI was using
+    sortBy: "BEind", // legacy default
     order: "desc",
-    fields: "BAutor,BKw,titleKeyword"
   });
 
   // --- data state ---
-  const [items, setItems] = useState([]);     // ALWAYS an array
+  const [items, setItems] = useState([]); // always an array
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
+  // track in-flight updates per row
+  const [updating, setUpdating] = useState(() => new Set());
+
   const canPrev = useMemo(() => q.page > 1, [q.page]);
-  const canNext = useMemo(() => q.page * q.limit < total, [q.page, q.limit, total]);
+  const canNext = useMemo(
+    () => q.page * q.limit < total,
+    [q.page, q.limit, total]
+  );
 
   // --- fetch books whenever query changes ---
   useEffect(() => {
@@ -29,13 +34,24 @@ export default function SearchUpdatePage() {
       setLoading(true);
       setErr("");
       try {
-        const data = await listBooks(q); // { page, limit, total, items: [] }
+        const data = await listBooks(q); // robust normalizer in api/books.js
         if (cancelled) return;
-        setItems(Array.isArray(data?.items) ? data.items : []);
-        setTotal(Number.isFinite(data?.total) ? data.total : 0);
+        const list = Array.isArray(data?.items)
+          ? data.items
+          : Array.isArray(data)
+          ? data
+          : [];
+        setItems(list);
+        setTotal(
+          Number.isFinite(data?.total)
+            ? data.total
+            : Array.isArray(list)
+            ? list.length
+            : 0
+        );
       } catch (e) {
         if (cancelled) return;
-        setItems([]); // keep array to avoid .map crashes
+        setItems([]);
         setTotal(0);
         setErr(typeof e === "string" ? e : e?.message || "Fehler beim Laden");
       } finally {
@@ -44,12 +60,14 @@ export default function SearchUpdatePage() {
     }
 
     fetchData();
-    return () => { cancelled = true; };
-  }, [q.page, q.limit, q.sortBy, q.order, q.fields]); // re-fetch on query changes
+    return () => {
+      cancelled = true;
+    };
+  }, [q.page, q.limit, q.sortBy, q.order]);
 
-  // --- handlers ---
+  // --- helpers ---
   function setQuery(patch) {
-    setQ(prev => ({ ...prev, ...patch }));
+    setQ((prev) => ({ ...prev, ...patch }));
   }
   function nextPage() {
     if (canNext) setQuery({ page: q.page + 1 });
@@ -57,11 +75,69 @@ export default function SearchUpdatePage() {
   function prevPage() {
     if (canPrev) setQuery({ page: q.page - 1 });
   }
+  const rowId = (b) =>
+    b?._id || b?.id || b?.barcode || b?.BMarkb || b?.BMark || "";
+
+  // optimistic local replace for a row
+  function patchRow(id, patch) {
+    if (!id) return;
+    setItems((prev) =>
+      prev.map((it) => (rowId(it) === id ? { ...it, ...patch } : it))
+    );
+  }
+  function setUpdatingOn(id, on = true) {
+    setUpdating((prev) => {
+      const n = new Set(prev);
+      if (!id) return n;
+      if (on) n.add(id);
+      else n.delete(id);
+      return n;
+    });
+  }
+
+  // --- update actions ---
+  async function toggleTop(b, nextVal) {
+    const id = rowId(b);
+    if (!id) return alert("Kein Datensatz-ID gefunden.");
+    setUpdatingOn(id, true);
+    const revert = { BTop: !!b?.BTop };
+    try {
+      patchRow(id, { BTop: !!nextVal }); // optimistic
+      await updateBook(id, { BTop: !!nextVal });
+    } catch (e) {
+      patchRow(id, revert);
+      alert(
+        typeof e === "string" ? e : e?.message || "Update Topbook fehlgeschlagen"
+      );
+    } finally {
+      setUpdatingOn(id, false);
+    }
+  }
+
+  async function setStatus(b, nextStatus /* 'abandoned' | 'finished' */) {
+    const id = rowId(b);
+    if (!id) return alert("Kein Datensatz-ID gefunden.");
+    setUpdatingOn(id, true);
+    const revert = { status: b?.status ?? null };
+    try {
+      patchRow(id, { status: nextStatus }); // optimistic
+      await updateBook(id, { status: nextStatus });
+    } catch (e) {
+      patchRow(id, revert);
+      alert(
+        typeof e === "string"
+          ? e
+          : e?.message || "Update Status (abandoned/finished) fehlgeschlagen"
+      );
+    } finally {
+      setUpdatingOn(id, false);
+    }
+  }
 
   return (
     <div className="p-4 space-y-4">
       <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <h1 className="text-xl font-semibold">Bücher verwalten</h1>
+        <h1 className="text-3xl font-bold">Bücher verwalten</h1>
 
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-sm flex items-center gap-1">
@@ -69,7 +145,7 @@ export default function SearchUpdatePage() {
             <select
               className="border rounded p-1"
               value={q.sortBy}
-              onChange={e => setQuery({ sortBy: e.target.value, page: 1 })}
+              onChange={(e) => setQuery({ sortBy: e.target.value, page: 1 })}
             >
               <option value="BEind">BEind</option>
               <option value="createdAt">Erstellt</option>
@@ -83,7 +159,7 @@ export default function SearchUpdatePage() {
             <select
               className="border rounded p-1"
               value={q.order}
-              onChange={e => setQuery({ order: e.target.value, page: 1 })}
+              onChange={(e) => setQuery({ order: e.target.value, page: 1 })}
             >
               <option value="desc">↓ absteigend</option>
               <option value="asc">↑ aufsteigend</option>
@@ -95,7 +171,9 @@ export default function SearchUpdatePage() {
             <select
               className="border rounded p-1"
               value={q.limit}
-              onChange={e => setQuery({ limit: Number(e.target.value), page: 1 })}
+              onChange={(e) =>
+                setQuery({ limit: Number(e.target.value), page: 1 })
+              }
             >
               <option value={10}>10</option>
               <option value={20}>20</option>
@@ -107,8 +185,8 @@ export default function SearchUpdatePage() {
 
       {/* Status line */}
       <div className="text-sm text-gray-600">
-        Seite <strong>{q.page}</strong> • Einträge pro Seite <strong>{q.limit}</strong> • Gesamt{" "}
-        <strong>{total}</strong>
+        Seite <strong>{q.page}</strong> • Einträge pro Seite{" "}
+        <strong>{q.limit}</strong> • Gesamt <strong>{total}</strong>
       </div>
 
       {/* Error / Loading / Empty */}
@@ -139,20 +217,75 @@ export default function SearchUpdatePage() {
                 <Th label="Stichwort (BKw)" />
                 <Th label="Verlag (BVerlag)" />
                 <Th label="Seiten (BSeiten)" />
+                <Th label="Topbook" />
+                <Th label="Abandoned" />
+                <Th label="Finished" />
                 <Th label="Erstellt" />
+                <Th label="Aktionen" />
               </tr>
             </thead>
             <tbody>
-              {(items || []).map((b) => (
-                <tr key={b._id || b.barcode || b.BMarkb} className="border-t">
-                  <Td>{b.barcode || b.BMarkb || b.BMark || "—"}</Td>
-                  <Td>{b.BAutor || "—"}</Td>
-                  <Td>{b.BKw || "—"}</Td>
-                  <Td>{b.BVerlag || "—"}</Td>
-                  <Td>{Number.isFinite(b.BSeiten) ? b.BSeiten : "—"}</Td>
-                  <Td>{b.createdAt ? new Date(b.createdAt).toLocaleString() : "—"}</Td>
-                </tr>
-              ))}
+              {(items || []).map((b) => {
+                const id = rowId(b);
+                const isBusy = updating.has(id);
+                const status = String(b?.status || "").toLowerCase();
+                const isAbandoned = status === "abandoned";
+                const isFinished = status === "finished";
+                return (
+                  <tr key={id} className="border-t align-top">
+                    <Td>{b?.barcode || b?.BMarkb || b?.BMark || "—"}</Td>
+                    <Td>{b?.BAutor || "—"}</Td>
+                    <Td>{b?.BKw || "—"}</Td>
+                    <Td>{b?.BVerlag || "—"}</Td>
+                    <Td>
+                      {Number.isFinite(b?.BSeiten) ? Number(b.BSeiten) : "—"}
+                    </Td>
+                    <Td>{b?.BTop ? "✓" : "—"}</Td>
+                    <Td>{isAbandoned ? "✓" : "—"}</Td>
+                    <Td>{isFinished ? "✓" : "—"}</Td>
+                    <Td>
+                      {b?.BEind ? new Date(b.BEind).toLocaleString() : "—"}
+                    </Td>
+                    <Td>
+                      <div className="flex flex-col gap-1">
+                        {/* Toggle Topbook */}
+                        <button
+                          disabled={isBusy}
+                          onClick={() => toggleTop(b, !b?.BTop)}
+                          className="px-2 py-1 border rounded disabled:opacity-50"
+                          title={b?.BTop ? "Topbook entfernen" : "Als Topbook markieren"}
+                        >
+                          {b?.BTop ? "★ Top entfernen" : "☆ Top setzen"}
+                        </button>
+
+                        {/* Status radio group (no Clear) */}
+                        <div className="flex items-center gap-2">
+                          <label className="inline-flex items-center gap-1 text-xs">
+                            <input
+                              type="radio"
+                              name={`status-${id}`}
+                              disabled={isBusy}
+                              checked={isAbandoned}
+                              onChange={() => setStatus(b, "abandoned")}
+                            />
+                            Abandoned
+                          </label>
+                          <label className="inline-flex items-center gap-1 text-xs">
+                            <input
+                              type="radio"
+                              name={`status-${id}`}
+                              disabled={isBusy}
+                              checked={isFinished}
+                              onChange={() => setStatus(b, "finished")}
+                            />
+                            Finished
+                          </label>
+                        </div>
+                      </div>
+                    </Td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -168,7 +301,7 @@ export default function SearchUpdatePage() {
           ← Zurück
         </button>
         <span className="text-sm">
-          Seite {q.page} / {Math.max(1, Math.ceil(total / q.limit || 1))}
+          Seite {q.page} / {Math.max(1, Math.ceil((total || 0) / q.limit))}
         </span>
         <button
           onClick={nextPage}
