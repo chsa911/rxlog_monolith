@@ -1,6 +1,7 @@
 // backend/controllers/booksController.js
 
-const { Types } = require("mongoose");
+const mongoose = require("mongoose");
+const { Types } = mongoose;
 const Book = require("../models/Book");
 const Barcode = require("../models/Barcode");
 
@@ -53,6 +54,13 @@ function resolveSort(sortByRaw, orderRaw) {
   const key = SORT_WHITELIST.has(sortBy) ? sortBy : "BEind";
   return { [key]: order };
 }
+
+// Central "free" definition for barcodes (used everywhere)
+const FREE_FILTER_BASE = {
+  isAvailable: true,
+  status: { $in: ["free", "available"] },
+  assignedBookId: { $exists: false },
+};
 
 /**
  * -------- Controllers --------
@@ -128,138 +136,118 @@ async function getBook(req, res) {
 
 /**
  * POST /api/books/register
- * Body expects book fields plus a barcode identifier under one of:
- *   - barcode
- *   - code
- *   - BMarkb
- *   - barcodeId
  *
- * Flow:
- *  1) Reserve barcode (by id-or-code), guarding availability.
- *  2) Create book (set barcode/BMarkb to reserved code).
- *  3) Backlink assignedBookId on the barcode; mark as assigned & unavailable.
- *  4) On any failure, roll back the reservation.
+ * Auto-picks an existing, available barcode from the barcodes collection (never generates).
+ * Request body:
+ *  - sizeRange: string (required)     e.g., "S-30-40"
+ *  - prefix?:   string (optional)     e.g., "ep" to restrict series
+ *  - ...any other Book fields (title, author, etc.)
+ *
+ * Flow (transactional):
+ *  1) Reserve a real, available barcode that matches { sizeRange, prefix? }.
+ *  2) Create the book using the reserved barcode.
+ *  3) Mark the barcode as assigned to the created book.
+ *
+ * On no availability, returns:
+ *   404 { error: "no barcodes for this sizeRange available" }
  */
 async function registerBook(req, res) {
-  // Defensive payload cleanup
-  stripInvalidId(req.body);
+  // Disallow client-provided barcode identifiers — server chooses from DB only
+  const { sizeRange, prefix, ...bookPayloadRaw } = req.body || {};
 
-  // Extract a barcode identifier from body
-  const suppliedBarcode =
-    req.body?.barcode ||
-    req.body?.code ||
-    req.body?.BMarkb ||
-    req.body?.barcodeId;
-
-  if (!suppliedBarcode) {
-    return res
-      .status(400)
-      .json({ error: "Missing barcode (code or id) in body" });
+  if (!sizeRange) {
+    return res.status(400).json({ error: "sizeRange is required" });
   }
 
-  // Build the book payload while excluding barcode helper fields
-  const {
-    barcode,
-    code,
-    BMarkb,
-    barcodeId,
-    _id, // ignore any client-supplied _id for create
-    ...bookPayload
-  } = req.body || {};
+  // Defensive payload cleanup
+  stripInvalidId(bookPayloadRaw);
+  const bookPayload = { ...bookPayloadRaw };
+  delete bookPayload.barcode;
+  delete bookPayload.code;
+  delete bookPayload.BMarkb;
+  delete bookPayload.barcodeId;
+  delete bookPayload._id;
 
-  let reservedBarcodeDoc = null;
-  let created = null;
+  const session = await Book.startSession();
 
   try {
-    // 1) Reserve the barcode (atomic)
-    reservedBarcodeDoc = await Barcode.findOneAndUpdate(
-      {
-        $and: [
-          idOrCodeQuery(suppliedBarcode),
-          // Available: either explicit true or no false; and not already assigned/reserved
-          { isAvailable: { $ne: false } },
-          { status: { $in: ["free", "available"] } },
+    let responsePayload;
+
+    await session.withTransaction(async () => {
+      // 1) Reserve a real, available barcode
+      const reserveFilter = {
+        ...FREE_FILTER_BASE,
+        sizeRange,
+        ...(prefix ? { code: new RegExp(`^${escapeRx(prefix)}`, "i") } : {}),
+      };
+
+      const reserved = await Barcode.findOneAndUpdate(
+        reserveFilter,
+        {
+          $set: { isAvailable: false, status: "reserved", reservedAt: new Date() },
+          $currentDate: { updatedAt: true },
+        },
+        { new: true, sort: { code: 1 }, session }
+      ).lean();
+
+      if (!reserved) {
+        throw new Error("no barcodes for this sizeRange available");
+      }
+
+      const chosenCode = reserved.code;
+      const now = new Date();
+
+      // 2) Create the book with that barcode
+      const createdArr = await Book.create(
+        [
+          {
+            ...bookPayload,
+            barcode: chosenCode,
+            BMarkb: bookPayload.BMarkb || chosenCode,
+            sizeRange, // keep for convenience/queries
+            createdAt: now,
+            updatedAt: now,
+          },
         ],
-      },
-      {
-        $set: {
+        { session }
+      );
+      const created = createdArr[0];
+
+      // 3) Assign barcode to this book (reserved -> assigned)
+      const assigned = await Barcode.findOneAndUpdate(
+        {
+          _id: reserved._id,
           isAvailable: false,
           status: "reserved",
-          reservedAt: new Date(),
+          assignedBookId: { $exists: false },
         },
-      },
-      { new: true }
-    ).lean();
+        {
+          $set: { status: "assigned", assignedBookId: created._id },
+          $currentDate: { updatedAt: true },
+          $unset: { releasedAt: 1 },
+        },
+        { new: true, session }
+      ).lean();
 
-    if (!reservedBarcodeDoc) {
-      return res
-        .status(404)
-        .json({ error: "Barcode not found or not available" });
-    }
-
-    // Ensure the book stores the chosen barcode code (Book model will sync BMarkb <-> barcode)
-    const chosenCode = reservedBarcodeDoc.code;
-
-    // 2) Create the book
-    created = await Book.create({
-      ...bookPayload,
-      barcode: chosenCode,
-      BMarkb: bookPayload.BMarkb || chosenCode,
-      // BEind is defaulted by the schema; no need to set unless you want explicit dates
-    });
-
-    // 3) Backlink on the barcode (robust matcher)
-    const backlinkMatch = idOrCodeQuery(
-      reservedBarcodeDoc?._id || reservedBarcodeDoc?.code || suppliedBarcode
-    );
-
-    await Barcode.updateOne(backlinkMatch, {
-      $set: {
-        assignedBookId: created._id,
-        status: "assigned",
-        isAvailable: false,
-      },
-      $unset: {
-        releasedAt: 1,
-      },
-    });
-
-    return res.status(201).json({
-      book: created,
-      barcode: {
-        _id: reservedBarcodeDoc._id,
-        code: reservedBarcodeDoc.code,
-        status: "assigned",
-      },
-    });
-  } catch (err) {
-    console.error("[registerBook] error:", err);
-
-    // 4) Roll back the barcode reservation if something failed
-    try {
-      if (reservedBarcodeDoc || suppliedBarcode) {
-        const rollbackMatch = idOrCodeQuery(
-          reservedBarcodeDoc?._id ||
-            reservedBarcodeDoc?.code ||
-            suppliedBarcode
-        );
-        await Barcode.updateOne(rollbackMatch, {
-          $set: {
-            isAvailable: true,
-            status: "available",
-            reservedAt: null,
-            assignedBookId: null,
-          },
-          $unset: {
-            reservedAt: 1,
-          },
-        });
+      if (!assigned) {
+        throw new Error("Failed to assign barcode (concurrency).");
       }
-    } catch (rbErr) {
-      console.error("[registerBook] rollback error:", rbErr);
-    }
 
+      responsePayload = {
+        book: created.toObject ? created.toObject() : created,
+        barcode: { _id: assigned._id, code: assigned.code, status: assigned.status },
+      };
+    });
+
+    return res.status(201).json(responsePayload);
+  } catch (err) {
+    if (err.message === "no barcodes for this sizeRange available") {
+      return res.status(404).json({ error: "no barcodes for this sizeRange available" });
+    }
+    console.error("[registerBook] error:", err);
     return res.status(500).json({ error: "Failed to register book" });
+  } finally {
+    session.endSession();
   }
 }
 
@@ -279,6 +267,7 @@ async function updateBook(req, res) {
     const update = { ...req.body };
     // Never allow client to change these directly
     delete update._id;
+    delete update.barcodeId; // keep barcode linkage controlled by server logic
 
     const result = await Book.findByIdAndUpdate(
       id,
@@ -288,8 +277,8 @@ async function updateBook(req, res) {
 
     if (!result) return res.status(404).json({ error: "Book not found" });
 
-    // Note: your Book model already frees barcodes on certain statuses after update
-    // via a post('findOneAndUpdate') hook. (e.g., "abandoned", "finished")
+    // Note: if you have hooks that free barcodes based on status changes,
+    // they will continue to run as before.
 
     res.json(result);
   } catch (err) {
@@ -324,12 +313,10 @@ async function deleteBook(req, res) {
             $set: {
               isAvailable: true,
               status: "available",
-              reservedAt: null,
               assignedBookId: null,
             },
-            $unset: {
-              reservedAt: 1,
-            },
+            $unset: { reservedAt: 1 },
+            $currentDate: { updatedAt: true },
           }
         );
       } catch (linkErr) {
@@ -347,11 +334,35 @@ async function deleteBook(req, res) {
   }
 }
 
+/**
+ * (Optional) HEAD /api/books/barcodes/available?sizeRange=S-30-40&prefix=ep
+ * Lets the UI quickly check availability and show a friendly message before submitting.
+ */
+async function headAvailable(req, res) {
+  try {
+    const { sizeRange, prefix } = req.query || {};
+    if (!sizeRange) return res.sendStatus(400);
+
+    const filter = {
+      ...FREE_FILTER_BASE,
+      sizeRange,
+      ...(prefix ? { code: new RegExp(`^${escapeRx(prefix)}`, "i") } : {}),
+    };
+
+    const exists = await Barcode.findOne(filter).select({ _id: 1 }).lean();
+    return res.sendStatus(exists ? 200 : 404);
+  } catch (err) {
+    console.error("[headAvailable] error:", err);
+    return res.sendStatus(500);
+  }
+}
+
 module.exports = {
   listBooks,
   getBook,
   registerBook,
   updateBook,
   deleteBook,
+  headAvailable, // optional convenience endpoint
 };
 

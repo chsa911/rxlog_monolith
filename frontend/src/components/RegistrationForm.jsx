@@ -1,7 +1,7 @@
 // frontend/src/components/RegistrationForm.jsx
 import { useState, useEffect, useMemo } from "react";
 import { autocomplete, registerBook } from "../api/books";
-import { previewBySize, validateForSize } from "../api/bmarks"; // ← make sure this API exists
+import { previewBarcode } from "../api/barcodes";
 import { useAppContext } from "../context/AppContext";
 
 function newRequestId() {
@@ -29,58 +29,66 @@ export default function RegistrationForm({ onRegistered }) {
     BK2P: "",
     BVerlag: "",
     BSeiten: "",
-    BTop: false
+    BTop: false,
   });
 
   const [suggestedMark, setSuggestedMark] = useState(null);
-  const [barcode, setBarcode] = useState(""); // ← user-chosen / override
+  const [barcode, setBarcode] = useState(""); // user-chosen / override
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const [suggestions, setSuggestions] = useState({
     BAutor: [],
     BKw: [],
     BKw1: [],
     BKw2: [],
-    BVerlag: []
+    BVerlag: [],
   });
 
   // derive normalized width/height strings
   const normW = useMemo(
-    () =>
-      form.BBreite?.toString()
-        .trim()
-        .replace(",", ".") || "",
+    () => (form.BBreite?.toString().trim().replace(",", ".") || ""),
     [form.BBreite]
   );
   const normH = useMemo(
-    () =>
-      form.BHoehe?.toString()
-        .trim()
-        .replace(",", ".") || "",
+    () => (form.BHoehe?.toString().trim().replace(",", ".") || ""),
     [form.BHoehe]
   );
 
-  // Live preview → suggested barcode (first free in series)
+  // Live preview → suggested barcode (lowest-rank available in series)
   useEffect(() => {
     if (!normW || !normH) {
       setSuggestedMark(null);
       setBarcode("");
+      setPreviewError("");
       return;
     }
 
     let cancelled = false;
     (async () => {
       try {
-        const m = await previewBySize(normW, normH);
-        const first = m?.BMark || m?.firstCode || m?.items?.[0]?.BMark || null;
+        const w = parseFloat(normW);
+        const h = parseFloat(normH);
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+
+        setPreviewBusy(true);
+        setPreviewError("");
+  const { candidate } = await previewBarcode(w, h);
+  const first = candidate ?? null;
         if (!cancelled) {
           setSuggestedMark(first);
           // Only prefill barcode if the user hasn't typed anything
           setBarcode(b => (b ? b : first || ""));
         }
-      } catch {
+      } catch (err) {
         if (!cancelled) {
-          setSuggestedMark(null); /* keep user-entered barcode */
+          setSuggestedMark(null); // keep any user-entered barcode
+          setPreviewError(
+            typeof err === "string" ? err : err?.message || "Vorschau fehlgeschlagen"
+          );
         }
+      } finally {
+        if (!cancelled) setPreviewBusy(false);
       }
     })();
 
@@ -107,7 +115,7 @@ export default function RegistrationForm({ onRegistered }) {
     return e =>
       setForm(f => ({
         ...f,
-        [name]: e.target.type === "checkbox" ? e.target.checked : e.target.value
+        [name]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
       }));
   }
 
@@ -124,35 +132,15 @@ export default function RegistrationForm({ onRegistered }) {
         BKP: Number(form.BKP || 0),
         BK1P: form.BK1P !== "" ? Number(form.BK1P) : null,
         BK2P: form.BK2P !== "" ? Number(form.BK2P) : null,
-        BSeiten: Number(form.BSeiten || 0)
+        BSeiten: Number(form.BSeiten || 0),
       };
 
-      // If the user left barcode blank, fall back to suggested (backend can still auto-pick)
+      // If the user left barcode blank, fall back to suggested
       const chosen = (barcode || suggestedMark || "").trim();
       if (chosen) payload.barcode = chosen;
 
       // Add an idempotency key to stop accidental duplicates
       payload.requestId = newRequestId();
-
-      // Optional: client-side validation to give friendlier error before POST
-      if (chosen) {
-        try {
-          const v = await validateForSize(
-            payload.BBreite,
-            payload.BHoehe,
-            chosen
-          );
-          if (!v?.ok) throw new Error(v?.reason || "Ungültiger Barcode");
-        } catch (valErr) {
-          setBusy(false);
-          return alert(
-            typeof valErr === "string"
-              ? valErr
-              : valErr?.message ||
-                  "Barcode passt nicht zur Größe oder ist nicht verfügbar."
-          );
-        }
-      }
 
       const saved = await registerBook(payload);
       refreshBooks?.();
@@ -171,14 +159,13 @@ export default function RegistrationForm({ onRegistered }) {
         BK2P: "",
         BVerlag: "",
         BSeiten: "",
-        BTop: false
+        BTop: false,
       });
       setSuggestedMark(null);
       setBarcode("");
+      setPreviewError("");
     } catch (err) {
-      alert(
-        typeof err === "string" ? err : err?.message || "Fehler beim Speichern"
-      );
+      alert(typeof err === "string" ? err : err?.message || "Fehler beim Speichern");
     } finally {
       setBusy(false);
     }
@@ -217,16 +204,19 @@ export default function RegistrationForm({ onRegistered }) {
           <span>BMark (optional – überschreibt Vorschlag)</span>
           <input
             value={barcode}
-            onChange={e => setBarcode(e.target.value.trim())}
+            onChange={e => setBarcode(e.target.value)}
             className="border p-2 rounded"
-            placeholder={
-              suggestedMark ? `z.B. ${suggestedMark}` : "z.B. eik202"
-            }
+            placeholder={suggestedMark ? `z.B. ${suggestedMark}` : "z.B. eik202"}
           />
           <small className="text-gray-600">
-            Muss zur Größe passen (Serienregel) und frei sein. Leer lassen, um
-            Automatik zu verwenden.
+            Leer lassen, um den vorgeschlagenen freien Barcode zu verwenden.
           </small>
+          {previewBusy && (
+            <small className="text-gray-500">Suche freien Barcode…</small>
+          )}
+          {previewError && (
+            <small className="text-red-600">{previewError}</small>
+          )}
         </label>
 
         <label className="flex flex-col gap-1">

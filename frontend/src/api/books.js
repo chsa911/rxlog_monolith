@@ -1,79 +1,69 @@
 // frontend/src/api/books.js
 import { API_BASE } from "./config";
 
-const BOOKS_BASE = `${API_BASE}/api/books`;
+/**
+ * List books with pagination/sorting.
+ * Always returns { page, limit, total, items: [] }.
+ */
+export async function listBooks(params = {}) {
+  const base = (API_BASE && API_BASE.trim()) || "";
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`${base}/api/books?${qs}`, { method: "GET" });
 
-/** Create (register) a book — returns the created book (includes barcode/BMarkb) */
-export async function registerBook(payload) {
-  const res = await fetch(`${BOOKS_BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || data.message || `HTTP ${res.status}`);
-  }
-  return data;
-}
-
-/** List books with filters/pagination */
-export async function listBooks(params = {}) {
-  const query = new URLSearchParams(params).toString();
-  const url = `${BOOKS_BASE}${query ? `?${query}` : ""}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-/** Generic partial update */
-export async function updateBook(id, data) {
-  const res = await fetch(`${BOOKS_BASE}/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    let msg = `Update failed (HTTP ${res.status})`;
-    try {
-      const j = await res.json();
-      if (j?.error) msg = j.error;
-    } catch (err) {
-      // ignore JSON parse errors; keep default msg
-    }
+    const msg = data?.error || `HTTP ${res.status}`;
     throw new Error(msg);
   }
-  return res.json();
+
+  const items =
+    Array.isArray(data?.items) ? data.items :
+    (Array.isArray(data) ? data : []);
+
+  return {
+    page: data?.page ?? 1,
+    limit: data?.limit ?? items.length,
+    total: data?.total ?? items.length,
+    items
+  };
 }
 
-/** Autocomplete
- * Backend route is: GET /api/books/autocomplete/:field?q=...
- */
-export async function autocomplete(field, q = "") {
-  const url = new URL(`${BOOKS_BASE}/autocomplete/${encodeURIComponent(field)}`);
-  if (q) url.searchParams.set("q", q);
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/* ---------- Legacy compatibility wrappers ---------- */
-
+// Alias for legacy imports
 export async function fetchBooks(params = {}) {
   return listBooks(params);
 }
 
-export async function setTop(id, top) {
-  return updateBook(id, { BTop: !!top });
+/**
+ * Register a new book. Backend requires `barcode` in payload.
+ */
+export async function registerBook(payload) {
+  const base = (API_BASE && API_BASE.trim()) || "";
+  const res = await fetch(`${base}/api/books/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return data;
 }
 
-export async function setStatus(id, status) {
-  // status: "historisiert" | "vorzeitig" | "none"
-  if (status === "historisiert") {
-    return updateBook(id, { BHistorisiert: true, BVorzeitig: false });
-  }
-  if (status === "vorzeitig") {
-    return updateBook(id, { BHistorisiert: false, BVorzeitig: true });
-  }
-  return updateBook(id, { BHistorisiert: false, BVorzeitig: false });
+/**
+ * Autocomplete helper used by RegistrationForm.
+ * Returns an array of strings (can be empty).
+ */
+export async function autocomplete(field, q) {
+  const base = (API_BASE && API_BASE.trim()) || "";
+  const qs = new URLSearchParams({ field, q }).toString();
+  const res = await fetch(`${base}/api/books/autocomplete?${qs}`, { method: "GET" });
+  const data = await res.json().catch(() => ([]));
+  if (!res.ok) return [];
+  return Array.isArray(data) ? data : [];
 }
+
+// Optional default export if any file does `import api from './api/books'`
+export default { listBooks, fetchBooks, registerBook, autocomplete };
